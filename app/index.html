@@ -82,6 +82,12 @@
                 <button class="seg-btn" data-tp="2">🟡 Средний</button>
                 <button class="seg-btn" data-tp="1">🟢 Низкий</button>
             </div>
+            <label class="filter-label">По выполненности</label>
+            <div class="segmented sub" id="tasks-done-seg">
+                <button class="seg-btn active" data-td="all">Все</button>
+                <button class="seg-btn" data-td="done">Выполненные</button>
+                <button class="seg-btn" data-td="undone">Невыполненные</button>
+            </div>
             <div class="card form-card" style="display:flex;gap:8px;align-items:center">
                 <input type="text" id="tasks-search" placeholder="Поиск по задачам…" autocomplete="off">
                 <button id="tasks-add-btn" class="small-btn">+ Задача</button>

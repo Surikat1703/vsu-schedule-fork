@@ -28,6 +28,7 @@ const state = {
     noteDone: false,       // «выполнено» в редакторе заметки
     tasksFilter: 'all',    // all | today | week
     tasksPrio: 0,          // фильтр по приоритету: 0=все, 1|2|3
+    tasksDone: 'all',      // фильтр по выполненности: all | done | undone
     tasksSearch: '',
     prefill: null,         // {title, date} — автозаполнение при создании из пары
     lessonClickDate: null, // ISO дня, по которому кликнули в паре (для кнопки «на день клика»)
@@ -1845,6 +1846,10 @@ function bindEvents() {
         state.tasksPrio = +b.dataset.tp;
         renderTasks();
     }));
+    document.querySelectorAll('#tasks-done-seg .seg-btn').forEach((b) => b.addEventListener('click', () => {
+        state.tasksDone = b.dataset.td;
+        renderTasks();
+    }));
     on('tasks-search', 'input', (e) => { state.tasksSearch = e.target.value.trim(); renderTasks(); });
     on('tasks-add-btn', 'click', () => { state.prefill = null; openNoteModal(null); });
     on('modal-backdrop', 'click', closeModals);
@@ -2204,6 +2209,7 @@ function renderTasks() {
     }
     document.querySelectorAll('#tasks-filter-seg .seg-btn').forEach((b) => b.classList.toggle('active', b.dataset.tf === state.tasksFilter));
     document.querySelectorAll('#tasks-prio-seg .seg-btn').forEach((b) => b.classList.toggle('active', +b.dataset.tp === state.tasksPrio));
+    document.querySelectorAll('#tasks-done-seg .seg-btn').forEach((b) => b.classList.toggle('active', b.dataset.td === state.tasksDone));
     const todayIso = isoFromLocalParts(new Date());
     const mondayD = mondayOfIso(todayIso);
     const weekMon = isoFromLocalParts(mondayD);
@@ -2213,6 +2219,8 @@ function renderTasks() {
     if (state.tasksFilter === 'today') list = list.filter((n) => n.date === todayIso);
     else if (state.tasksFilter === 'week') list = list.filter((n) => n.date && n.date >= weekMon && n.date <= weekSun);
     if (state.tasksPrio) list = list.filter((n) => prioOf(n) === state.tasksPrio);
+    if (state.tasksDone === 'done') list = list.filter((n) => doneFromTitle(n.title));
+    else if (state.tasksDone === 'undone') list = list.filter((n) => !doneFromTitle(n.title));
     const q = state.tasksSearch.toLowerCase();
     if (q) list = list.filter((n) => (n.title || '').toLowerCase().includes(q) || (n.body || '').toLowerCase().includes(q));
     list.sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999') || (prioOf(b) - prioOf(a)) || (a.time || '99').localeCompare(b.time || '99'));
