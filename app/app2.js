@@ -654,6 +654,43 @@ function renderSchedule() {
             </div>
         </div>`;
     }).join('');
+
+    renderDayTasks();
+}
+
+// Задачи на показанный день расписания (все, без фильтров — и выполненные, и нет).
+function renderDayTasks() {
+    const box = $('day-tasks');
+    if (!box) return;
+    const p = state.profile;
+    if (!p || !p.registered) { box.innerHTML = ''; return; }
+    const day = currentSchedDay();
+    const dayIdx = DAYS_FULL.indexOf(day);
+    if (dayIdx < 0) { box.innerHTML = ''; return; }
+    const monday = displayMonday();
+    const d = new Date(monday); d.setUTCDate(d.getUTCDate() + dayIdx);
+    const iso = isoFromUTCParts(d);
+    const list = state.notes.filter((n) => !n.deleted && n.date === iso);
+    if (!list.length) { box.innerHTML = ''; return; }
+    list.sort((a, b) => (a.time || '99').localeCompare(b.time || '99') || (prioOf(b) - prioOf(a)));
+    box.innerHTML = `<div class="section-title">📌 Задачи на ${esc(formatDateShort(iso))}</div>` + list.map((n) => {
+        const done = doneFromTitle(n.title);
+        const pr = prioOf(n);
+        return `<div class="note-card task-card prio-${pr}${done ? ' done' : ''}" data-note="${esc(n.client_id)}">
+            <button class="task-done${done ? ' is-done' : ''}" data-toggle-done="${esc(n.client_id)}" title="Отметить выполненным">${done ? '✅' : '☐'}</button>
+            <div class="note-info">
+                <div class="note-title">${esc(titleWithoutPrio(titleWithoutDone(n.title)) || 'Без названия')}</div>
+                ${n.body ? `<div class="note-body">${esc(n.body)}</div>` : ''}
+                <div class="note-meta">${n.time ? '⏰ ' + esc(n.time) : ''}</div>
+            </div></div>`;
+    }).join('');
+    document.querySelectorAll('#day-tasks .task-card[data-note]').forEach((el) => {
+        el.addEventListener('click', () => openNoteModal(state.notes.find((n) => n.client_id === el.dataset.note)));
+    });
+    document.querySelectorAll('#day-tasks [data-toggle-done]').forEach((b) => b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleDone(b.dataset.toggleDone);
+    }));
 }
 
 // ─── Таймер ───────────────────────────────────────────────────────────────────
@@ -2199,6 +2236,7 @@ async function toggleDone(client_id) {
     await notePut(updated);
     renderTasks();
     renderCalendar();
+    renderDayTasks();
     syncNotes().then(renderCalendar);
 }
 

@@ -602,3 +602,5 @@ label { display: block; font-size: 13px; color: var(--text-muted); margin: 10px 
 #lesson-note-preview { background: var(--bg-card2); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
 #lesson-note-preview .note-title { font-weight: 600; font-size: 15px; }
 #lesson-note-preview .note-meta { font-size: 12.5px; color: var(--text-muted); margin-top: 4px; }
+
+.section-title { display:block; font-size:13px; font-weight:600; color:var(--text-muted); margin:14px 2px 6px; }
