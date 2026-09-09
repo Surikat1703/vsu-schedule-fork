@@ -81,7 +81,7 @@ function composeTitle(base, prio, done) {
     return e ? (t + ' ' + e) : t;
 }
 
-const APP_VERSION = '1.2.4';
+const APP_VERSION = '1.2.5';
 // Цветные метки типов занятий: на стенде включены, в проде пока выключены
 const FEATURE_LESSON_COLORS = true;
 
