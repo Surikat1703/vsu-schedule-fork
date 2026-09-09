@@ -1,0 +1,23 @@
+# Зависимости / сборки — не коммитим
+node_modules/
+dist/
+desktop/node_modules/
+desktop/dist/
+desktop/app/
+mobile/node_modules/
+mobile/www/
+
+# Android / Gradle
+mobile/android/app/build/
+mobile/android/.gradle/
+mobile/android/.idea/
+mobile/android/local.properties
+mobile/android/capacitor-cordova-android-plugins/build/
+mobile/android/app/capacitor.build.gradle
+mobile/android/app/google-services.json
+
+# Логи/прочее
+*.log
+*.pid
+.DS_Store
+Thumbs.db

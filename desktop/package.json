@@ -1,0 +1,36 @@
+{
+  "name": "vsu-schedule-desktop",
+  "productName": "Расписание ВГУ",
+  "version": "1.0.0",
+  "description": "Персональная версия расписания ВГУ (расширенный функционал)",
+  "main": "main.js",
+  "author": "personal",
+  "license": "UNLICENSED",
+  "allowScripts": [
+    "electron"
+  ],
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.personal.vsu.schedule",
+    "productName": "Расписание ВГУ",
+    "files": [
+      "main.js",
+      "preload.js",
+      "app/**/*"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "portable",
+      "signAndEditExecutable": false
+    }
+  }
+}

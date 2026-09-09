@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Расписание ВГУ</title>
+    <meta name="theme-color" content="#0b0f1a">
+    <link rel="manifest" href="manifest.webmanifest">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Расписание ВГУ">
+    <link rel="apple-touch-icon" href="icons/icon-192.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="icons/icon-32.png">
+    <link rel="stylesheet" href="style2.css">
+    <script>
+        // Локальные обёртки (Electron/Capacitor) обращаются к API сервиса удалённо.
+        // Preload Electron уже выставил window.__API_BASE__; в Capacitor ставим здесь.
+        if (!window.__API_BASE__ && (window.Capacitor || location.protocol === 'capacitor:')) {
+            window.__API_BASE__ = 'https://vsu.my1gvps.xyz';
+        }
+    </script>
+    <script src="https://telegram.org/js/telegram-web-app.js" defer></script>
+</head>
+<body>
+
+<div id="splash">
+    <img src="icons/icon-192.png" alt="" class="splash-icon">
+    <div class="loader"></div>
+</div>
+
+<div id="login-screen" class="hidden">
+    <div class="login-inner">
+        <img src="icons/icon-192.png" alt="" class="login-icon">
+        <h1>Расписание ВГУ</h1>
+        <p class="login-sub">Факультет компьютерных наук</p>
+        <button id="login-btn" class="primary-btn big">Войти через Telegram</button>
+        <div id="login-waiting" class="login-waiting hidden">
+            <div class="loader small"></div>
+            <p>Ожидаю подтверждение в Telegram…<br>Подтверди вход у бота и вернись сюда.</p>
+            <button id="login-cancel" class="text-btn">Отмена</button>
+        </div>
+        <p class="login-hint">Откроется бот — нажми в нём <b>Start</b>,<br>и приложение войдёт автоматически.</p>
+    </div>
+</div>
+
+<div id="app" class="hidden">
+    <header id="header">
+        <div class="header-left">
+            <div id="hdr-title">Расписание</div>
+            <div id="hdr-sub"></div>
+        </div>
+        <div class="header-right">
+            <span id="offline-badge" class="offline-badge hidden">оффлайн</span>
+            <button id="week-badge" class="week-badge">…</button>
+        </div>
+    </header>
+
+    <main id="views">
+        <section id="view-schedule" class="view">
+            <nav class="days-nav" id="days-nav"></nav>
+            <div id="countdown-card" class="countdown-card hidden">
+                <div class="countdown-label" id="countdown-label"></div>
+                <div class="countdown-timer" id="countdown-timer"></div>
+                <div class="countdown-sub" id="countdown-sub"></div>
+            </div>
+            <div id="schedule-list" class="cards-list"></div>
+        </section>
+
+        <!-- ═══ ЗАДАЧИ ═══ -->
+        <section id="view-tasks" class="view hidden">
+            <label class="filter-label">По дате</label>
+            <div class="segmented" id="tasks-filter-seg">
+                <button class="seg-btn active" data-tf="all">Все</button>
+                <button class="seg-btn" data-tf="today">Сегодня</button>
+                <button class="seg-btn" data-tf="week">Эта неделя</button>
+            </div>
+            <label class="filter-label">По приоритету</label>
+            <div class="segmented sub" id="tasks-prio-seg">
+                <button class="seg-btn active" data-tp="0">Все</button>
+                <button class="seg-btn" data-tp="3">🔴 Высокий</button>
+                <button class="seg-btn" data-tp="2">🟡 Средний</button>
+                <button class="seg-btn" data-tp="1">🟢 Низкий</button>
+            </div>
+            <div class="card form-card" style="display:flex;gap:8px;align-items:center">
+                <input type="text" id="tasks-search" placeholder="Поиск по задачам…" autocomplete="off">
+                <button id="tasks-add-btn" class="small-btn">+ Задача</button>
+            </div>
+            <div id="tasks-list" class="cards-list"></div>
+        </section>
+
+        <section id="view-calendar" class="view hidden">
+            <div class="cal-header">
+                <button class="icon-btn" id="cal-prev">‹</button>
+                <div class="cal-title" id="cal-title"></div>
+                <button class="icon-btn" id="cal-next">›</button>
+            </div>
+            <div class="cal-weekdays">
+                <span>Пн</span><span>Вт</span><span>Ср</span><span>Чт</span><span>Пт</span><span>Сб</span><span>Вс</span>
+            </div>
+            <div class="cal-grid" id="cal-grid"></div>
+            <div class="cal-legend">
+                <span><i class="dot dot-lesson"></i> пары</span>
+                <span><i class="dot dot-note"></i> заметки</span>
+                <span><i class="dot dot-exam"></i> экзамен</span>
+            </div>
+            <div id="day-panel" class="day-panel">
+                <div class="day-panel-header">
+                    <div id="day-panel-title"></div>
+                    <button id="add-note-btn" class="small-btn">+ Заметка</button>
+                </div>
+                <div id="day-panel-content"></div>
+            </div>
+        </section>
+
+        <section id="view-exams" class="view hidden">
+            <div class="session-card" id="session-head">
+                <div class="session-title" id="session-title">Сессия</div>
+                <div class="session-sub" id="session-sub"></div>
+            </div>
+            <div id="exam-next-card" class="exam-next-card hidden">
+                <div class="exam-next-label">Следующий экзамен</div>
+                <div class="exam-next-name" id="exam-next-name"></div>
+                <div class="exam-next-countdown" id="exam-next-countdown"></div>
+            </div>
+            <div id="exam-list" class="cards-list"></div>
+        </section>
+
+        <section id="view-search" class="view hidden">
+            <div class="segmented" id="search-seg">
+                <button class="seg-btn active" data-seg="teacher">👨‍🏫 Преподаватели</button>
+                <button class="seg-btn" data-seg="rooms">🚪 Аудитории</button>
+            </div>
+            <div id="search-teacher-form">
+                <div class="segmented sub" id="teachers-scope">
+                    <button class="seg-btn active" data-scope="my">Мои</button>
+                    <button class="seg-btn" data-scope="all">Все</button>
+                </div>
+                <div class="card form-card">
+                    <input type="text" id="teacher-input" placeholder="Фамилия преподавателя…" autocomplete="off">
+                </div>
+                <div id="teachers-list" class="cards-list"></div>
+            </div>
+            <div id="search-rooms-form" class="card form-card hidden">
+                <label>День недели</label>
+                <select id="rooms-day"></select>
+                <label>Неделя</label>
+                <select id="rooms-week">
+                    <option value="0">Числитель</option>
+                    <option value="1">Знаменатель</option>
+                </select>
+                <label>Пара</label>
+                <select id="rooms-slot"></select>
+                <button id="rooms-search-btn" class="primary-btn">Найти свободные</button>
+            </div>
+            <div id="search-results" class="cards-list"></div>
+        </section>
+
+        <section id="view-more" class="view hidden">
+            <div class="card profile-card">
+                <div class="profile-avatar">🎓</div>
+                <div class="profile-info">
+                    <div id="profile-name"></div>
+                    <div id="profile-sub" class="muted"></div>
+                </div>
+                <button id="edit-profile-btn" class="small-btn">Изменить</button>
+            </div>
+
+            <div class="card">
+                <h3>Режим отображения</h3>
+                <div class="segmented" id="mode-seg">
+                    <button class="seg-btn" data-mode="обычный">Обычный</button>
+                    <button class="seg-btn" data-mode="po***">Po***</button>
+                    <button class="seg-btn" data-mode="пивко">Пивко</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>Уведомления</h3>
+                <div class="row-flex">
+                    <span>Push-уведомления</span>
+                    <label class="switch"><input type="checkbox" id="push-toggle"><span class="slider"></span></label>
+                </div>
+                <p class="muted small" id="push-hint"></p>
+                <button id="push-test-btn" class="secondary-btn">Проверить уведомления</button>
+                <button id="push-diag-btn" class="text-btn">Диагностика уведомлений</button>
+                <pre id="push-diag" class="diag-box hidden"></pre>
+                <button id="sw-reset-btn" class="secondary-btn hidden">Переустановить service worker</button>
+                <label class="mt8">Куда присылать напоминания</label>
+                <div class="segmented" id="notify-seg">
+                    <button class="seg-btn" data-nc="push">📱 Прилож.</button>
+                    <button class="seg-btn" data-nc="tg">✈️ Бот</button>
+                    <button class="seg-btn" data-nc="both">Оба</button>
+                </div>
+            </div>
+
+            <div class="card" id="colors-card">
+                <h3>🎨 Цвета типов пар</h3>
+                <div class="row-flex">
+                    <span>Цветные метки</span>
+                    <label class="switch"><input type="checkbox" id="colors-toggle"><span class="slider"></span></label>
+                </div>
+                <p class="muted small">Слева у пары появляется цветная полоска и подпись — сразу видно дистант, физкультуру и другие занятия.</p>
+                <div id="colors-list"></div>
+                <button id="colors-reset" class="text-btn">Вернуть цвета по умолчанию</button>
+            </div>
+
+            <div class="card">
+                <h3>Таймер пар</h3>
+                <div class="row-flex">
+                    <span>Показывать отсчёт</span>
+                    <label class="switch"><input type="checkbox" id="timer-toggle"><span class="slider"></span></label>
+                </div>
+                <label class="mt8">Начинать отсчёт</label>
+                <select id="timer-mode-select">
+                    <option value="0">С начала дня</option>
+                    <option value="5">За 5 часов до пары</option>
+                    <option value="2">За 2 часа до пары</option>
+                    <option value="1">За 1 час до пары</option>
+                    <option value="-1">Только во время пар</option>
+                </select>
+                <div class="row-flex mt8">
+                    <span>Вкладка «Сессия»</span>
+                    <label class="switch"><input type="checkbox" id="session-toggle"><span class="slider"></span></label>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>📋 Сводка расписания</h3>
+                <p class="muted small">Присылает список пар заранее: сколько их, во сколько начало и конец. Доставка — по каналу из «Уведомлений» (приложение/бот).</p>
+                <div class="row-flex">
+                    <span>Присылать сводку</span>
+                    <label class="switch"><input type="checkbox" id="summary-toggle"><span class="slider"></span></label>
+                </div>
+                <div id="summary-box" class="hidden">
+                    <label class="mt8">Когда присылать</label>
+                    <div class="segmented" id="summary-mode-seg">
+                        <button class="seg-btn" data-sm="evening">Накануне</button>
+                        <button class="seg-btn" data-sm="sameday">В день пар</button>
+                    </div>
+                    <div id="summary-evening-box">
+                        <label>Время отправки (накануне)</label>
+                        <input type="time" id="summary-time" value="20:00">
+                    </div>
+                    <div id="summary-sameday-box" class="hidden">
+                        <label>За сколько до первой пары</label>
+                        <select id="summary-before">
+                            <option value="30">За 30 минут</option>
+                            <option value="60">За 1 час</option>
+                            <option value="120">За 2 часа</option>
+                            <option value="180">За 3 часа</option>
+                        </select>
+                    </div>
+                    <label>Дни-исключения — для них сводка не придёт</label>
+                    <div class="skip-days" id="summary-skip"></div>
+                </div>
+            </div>
+
+            <div class="card" id="install-card">
+                <h3>📲 Установка на iPhone</h3>
+                <p class="muted small">Открой в Safari → кнопка «Поделиться» → <b>«На экран “Домой”»</b>. После установки приложение работает без интернета, а уведомления приходят как обычные push.</p>
+            </div>
+
+            <div class="card hidden" id="install-tg-card">
+                <h3>📲 Приложение на iPhone</h3>
+                <p class="muted small"><b>Что сделать:</b><br>
+                1. Нажми кнопку ниже — откроется Safari.<br>
+                2. В Safari нажми <b>«Поделиться»</b> (квадрат со стрелкой внизу).<br>
+                3. Выбери <b>«На экран “Домой”»</b> → <b>«Добавить»</b>.<br>
+                4. Запусти «ВГУ ФКН» с домашнего экрана и войди через Telegram.<br><br>
+                Приложение работает без интернета, с календарём, заметками и push-уведомлениями.</p>
+                <button id="open-safari-btn" class="primary-btn mt8">Добавить приложение на iPhone</button>
+            </div>
+
+            <div class="card" id="android-card">
+                <h3>🤖 Приложение на Android</h3>
+                <p class="muted small">Нажми кнопку — бот пришлёт установочный файл (APK) в Telegram. Открой его из чата, разреши установку и пользуйся как обычным приложением: с уведомлениями и оффлайн-режимом.</p>
+                <button id="get-apk-btn" class="secondary-btn mt8">Получить APK в Telegram</button>
+            </div>
+
+            <div class="card">
+                <h3>Поддержка</h3>
+                <button id="report-btn" class="secondary-btn">🆘 Сообщить об ошибке</button>
+            </div>
+
+            <div class="card admin-entry hidden" id="admin-entry">
+                <button id="open-admin-btn" class="secondary-btn admin-btn">⚙️ Админ-панель</button>
+            </div>
+
+            <button id="logout-btn" class="text-btn danger">Выйти из аккаунта</button>
+            <p class="muted small center" id="sync-info"></p>
+            <p class="disclaimer">
+                Сервис не является официальным приложением факультета компьютерных наук ВГУ —
+                он лишь в удобной форме показывает открытую учебную информацию: расписание занятий и экзаменов.<br><br>
+                Мы не запрашиваем и не храним пароли: вход выполняется через Telegram.
+                На закрытом сервере проекта хранится только необходимый минимум — ваш Telegram ID,
+                выбранные курс/группа, настройки и созданные вами заметки. Доступ к заметкам возможен
+                только по вашему персональному ключу сессии; данные никому не передаются
+                и не используются ни для чего, кроме работы сервиса.
+            </p>
+        </section>
+
+        <section id="view-admin" class="view hidden">
+            <button id="admin-back" class="text-btn">‹ Назад</button>
+            <div class="card" id="admin-stats-card">
+                <h3>📊 Статистика</h3>
+                <div id="admin-stats" class="admin-grid"></div>
+            </div>
+            <div class="card">
+                <h3>📅 Неделя</h3>
+                <div class="row-flex">
+                    <span id="admin-week-label">…</span>
+                    <button id="admin-toggle-week" class="small-btn">Сменить</button>
+                </div>
+                <div class="row-flex mt8">
+                    <span>🏖 Каникулы (скрыть расписание)</span>
+                    <label class="switch"><input type="checkbox" id="admin-vacation-toggle"><span class="slider"></span></label>
+                </div>
+                <button id="admin-update-data" class="secondary-btn mt8">📥 Обновить данные расписания</button>
+            </div>
+            <div class="card">
+                <h3>🎓 Сессия</h3>
+                <div class="segmented" id="admin-session-seg">
+                    <button class="seg-btn" data-sess="summer">Летняя</button>
+                    <button class="seg-btn" data-sess="winter">Зимняя</button>
+                    <button class="seg-btn" data-sess="off">Выкл</button>
+                </div>
+                <div class="row-flex mt8">
+                    <span>Год: <b id="admin-sess-year">…</b></span>
+                    <button id="admin-sess-year-btn" class="small-btn">Изменить</button>
+                </div>
+            </div>
+            <div class="card">
+                <h3>⏰ Время</h3>
+                <div class="row-flex">
+                    <span>Смещение ЧП: <b id="admin-offset">0</b> ч</span>
+                    <div class="stepper">
+                        <button data-step="offset:-1">−</button>
+                        <button data-step="offset:1">+</button>
+                    </div>
+                </div>
+                <div class="row-flex mt8">
+                    <span>Сдвиг: <b id="admin-shift">0</b> дн</span>
+                    <div class="stepper">
+                        <button data-step="shift:-1">−</button>
+                        <button data-step="shift:0">⟲</button>
+                        <button data-step="shift:1">+</button>
+                    </div>
+                </div>
+                <p class="muted small mt8" id="admin-bot-time"></p>
+            </div>
+            <div class="card">
+                <h3>📢 Рассылка</h3>
+                <textarea id="broadcast-text" placeholder="Текст объявления (можно HTML)…"></textarea>
+                <div class="row-flex mt8">
+                    <label class="check-label"><input type="checkbox" id="bc-tg" checked> Telegram</label>
+                    <label class="check-label"><input type="checkbox" id="bc-push" checked> Push</label>
+                </div>
+                <button id="broadcast-btn" class="primary-btn mt8">Отправить всем</button>
+            </div>
+            <div class="card">
+                <h3>🔔 Жалобы</h3>
+                <div id="admin-reports"></div>
+            </div>
+            <div class="card">
+                <h3>🚀 Мониторинг</h3>
+                <div id="admin-monitoring" class="muted small"></div>
+            </div>
+        </section>
+    </main>
+
+    <nav id="tabbar">
+        <button class="tab active" data-view="schedule"><span class="tab-ico">📅</span><span>Пары</span></button>
+        <button class="tab" data-view="tasks"><span class="tab-ico">✅</span><span>Задачи</span></button>
+        <button class="tab" data-view="calendar"><span class="tab-ico">🗓</span><span>Календарь</span></button>
+        <button class="tab" data-view="exams" id="tab-exams"><span class="tab-ico">🎓</span><span>Сессия</span></button>
+        <button class="tab" data-view="search"><span class="tab-ico">🔍</span><span>Поиск</span></button>
+        <button class="tab" data-view="more"><span class="tab-ico">⚙️</span><span>Ещё</span></button>
+    </nav>
+</div>
+
+<div id="modal-backdrop" class="modal-backdrop hidden"></div>
+
+<div id="note-modal" class="modal hidden">
+    <div class="modal-header">
+        <h2 id="note-modal-title">Заметка</h2>
+        <button class="close-btn" data-close="note-modal">✕</button>
+    </div>
+    <label>Приоритет</label>
+    <div class="segmented" id="note-priority-seg">
+        <button class="seg-btn" data-prio="3">🔴 Высокий</button>
+        <button class="seg-btn active" data-prio="2">🟡 Средний</button>
+        <button class="seg-btn" data-prio="1">🟢 Низкий</button>
+    </div>
+    <input type="text" id="note-title" placeholder="Заголовок" maxlength="80">
+    <textarea id="note-body" placeholder="Текст заметки…"></textarea>
+    <div class="row2">
+        <div><label>Дата</label><input type="date" id="note-date"></div>
+        <div><label>Время</label><input type="time" id="note-time"></div>
+    </div>
+    <label>Напомнить</label>
+    <select id="note-remind">
+        <option value="">Не напоминать</option>
+        <option value="0">В момент события</option>
+        <option value="15">За 15 минут</option>
+        <option value="60">За 1 час</option>
+        <option value="180">За 3 часа</option>
+        <option value="1440">За 1 день</option>
+    </select>
+    <p class="muted small" id="note-remind-hint"></p>
+    <div class="row2 mt8">
+        <button id="note-delete-btn" class="secondary-btn danger hidden">Удалить</button>
+        <button id="note-save-btn" class="primary-btn">Сохранить</button>
+    </div>
+</div>
+
+<div id="reg-modal" class="modal hidden">
+    <div class="modal-header">
+        <h2>Профиль</h2>
+        <button class="close-btn" data-close="reg-modal">✕</button>
+    </div>
+    <label>Курс</label>
+    <select id="reg-course"><option value="">Выбери курс</option></select>
+    <label>Группа</label>
+    <select id="reg-group" disabled><option value="">Выбери группу</option></select>
+    <label>Подгруппа</label>
+    <div id="reg-subgroups" class="segmented"></div>
+    <button id="reg-save-btn" class="primary-btn mt8">Сохранить</button>
+</div>
+
+<div id="report-modal" class="modal hidden">
+    <div class="modal-header">
+        <h2>Сообщить об ошибке</h2>
+        <button class="close-btn" data-close="report-modal">✕</button>
+    </div>
+    <div class="report-rules">
+        <p><b>✅ Пишите, если</b> расписание расходится с официальной таблицей факультета.
+        Укажите курс, группу, подгруппу, день и пару.</p>
+        <p><b>🚫 Не принимаются</b> отмены и переносы, о которых сказал преподаватель:
+        в официальной таблице их нет, поэтому в расписание они не вносятся.
+        Отметьте это себе сами: <b>Календарь → + Заметка</b>, можно с напоминанием.</p>
+    </div>
+    <textarea id="report-text" placeholder="Например: 2 курс, 11 группа, 1 п/г, четверг 15:10: в приложении пусто, а в таблице пара есть"></textarea>
+    <button id="report-send-btn" class="primary-btn mt8">Отправить</button>
+</div>
+
+<div id="reply-modal" class="modal hidden">
+    <div class="modal-header">
+        <h2 id="reply-modal-title">Ответ на жалобу</h2>
+        <button class="close-btn" data-close="reply-modal">✕</button>
+    </div>
+    <p class="muted small" id="reply-quote"></p>
+    <textarea id="reply-text" placeholder="Текст ответа пользователю…"></textarea>
+    <button id="reply-send-btn" class="primary-btn mt8">Отправить пользователю</button>
+</div>
+
+<div id="color-modal" class="modal hidden">
+    <div class="modal-header">
+        <h2 id="color-modal-title">Цвет</h2>
+        <button class="close-btn" data-close="color-modal">✕</button>
+    </div>
+    <div id="color-palette" class="color-palette"></div>
+</div>
+
+<div id="prompt-modal" class="modal hidden">
+    <div class="modal-header">
+        <h2 id="prompt-title"></h2>
+        <button class="close-btn" data-close="prompt-modal">✕</button>
+    </div>
+    <input type="text" id="prompt-input">
+    <button id="prompt-ok-btn" class="primary-btn mt8">Ок</button>
+</div>
+
+<!-- Подтверждение создания заметки из пары -->
+<div id="lesson-note-modal" class="modal hidden">
+    <div class="modal-header">
+        <h2>Создать заметку к паре?</h2>
+        <button class="close-btn" data-close="lesson-note-modal">✕</button>
+    </div>
+    <div class="card" id="lesson-note-preview" style="margin-bottom:8px"></div>
+    <label>Дата</label>
+    <input type="date" id="lesson-note-date">
+    <div class="row2 mt8">
+        <button id="lesson-note-today" class="secondary-btn">На день клика</button>
+        <button id="lesson-note-next" class="secondary-btn">Следующую пару</button>
+    </div>
+    <label class="mt8">Приоритет</label>
+    <div class="segmented" id="lesson-note-prio">
+        <button class="seg-btn" data-prio="3">🔴</button>
+        <button class="seg-btn active" data-prio="2">🟡</button>
+        <button class="seg-btn" data-prio="1">🟢</button>
+    </div>
+    <div class="row2 mt8">
+        <button id="lesson-note-cancel" class="secondary-btn" data-close="lesson-note-modal">Отмена</button>
+        <button id="lesson-note-ok" class="primary-btn">Создать заметку</button>
+    </div>
+</div>
+
+<div id="tour-card" class="tour-card hidden">
+    <div class="tour-progress" id="tour-progress"></div>
+    <h3 id="tour-title"></h3>
+    <p id="tour-text"></p>
+    <div class="row2 mt8">
+        <button id="tour-skip" class="secondary-btn">Пропустить</button>
+        <button id="tour-next" class="primary-btn">Далее</button>
+    </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="app2.js"></script>
+</body>
+</html>
