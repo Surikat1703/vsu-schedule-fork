@@ -1422,7 +1422,7 @@ function urlB64ToUint8(base64String) {
 // Берём регистрацию напрямую и дожидаемся активации с понятной ошибкой.
 async function getActiveSW() {
     let reg = await navigator.serviceWorker.getRegistration();
-    if (!reg) reg = await navigator.serviceWorker.register('/sw.js?v=' + APP_VERSION);
+    if (!reg) reg = await navigator.serviceWorker.register('./sw.js?v=' + APP_VERSION);
     if (reg.active) return reg;
     const worker = reg.installing || reg.waiting;
     if (!worker) {
@@ -1789,7 +1789,7 @@ function endTour() {
 // ─── Service Worker ───────────────────────────────────────────────────────────
 function registerSW() {
     if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('/sw.js?v=' + APP_VERSION).catch((e) => console.warn('SW:', e));
+        navigator.serviceWorker.register('./sw.js?v=' + APP_VERSION).catch((e) => console.warn('SW:', e));
     }
 }
 
