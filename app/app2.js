@@ -26,9 +26,9 @@ const state = {
     // ── Персональные расширения ──
     notePrio: 0,           // выбранный приоритет в редакторе заметки (0-3)
     noteDone: false,       // «выполнено» в редакторе заметки
-    tasksFilter: 'all',    // all | today | week
-    tasksPrio: 0,          // фильтр по приоритету: 0=все, 1|2|3
-    tasksDone: 'all',      // фильтр по выполненности: all | done | undone
+    tasksFilter: localStorage.getItem('tasksFilter') || 'all',    // all | today | week
+    tasksPrio: parseInt(localStorage.getItem('tasksPrio')) || 0,    // фильтр по приоритету: 0=все, 1|2|3
+    tasksDone: localStorage.getItem('tasksDone') || 'undone',      // фильтр по выполненности: all | done | undone
     tasksSearch: '',
     prefill: null,         // {title, date} — автозаполнение при создании из пары
     lessonClickDate: null, // ISO дня, по которому кликнули в паре (для кнопки «на день клика»)
@@ -1840,14 +1840,17 @@ function bindEvents() {
     // Вкладка «Задачи»
     document.querySelectorAll('#tasks-filter-seg .seg-btn').forEach((b) => b.addEventListener('click', () => {
         state.tasksFilter = b.dataset.tf;
+        localStorage.setItem('tasksFilter', state.tasksFilter);
         renderTasks();
     }));
     document.querySelectorAll('#tasks-prio-seg .seg-btn').forEach((b) => b.addEventListener('click', () => {
         state.tasksPrio = +b.dataset.tp;
+        localStorage.setItem('tasksPrio', state.tasksPrio);
         renderTasks();
     }));
     document.querySelectorAll('#tasks-done-seg .seg-btn').forEach((b) => b.addEventListener('click', () => {
         state.tasksDone = b.dataset.td;
+        localStorage.setItem('tasksDone', state.tasksDone);
         renderTasks();
     }));
     on('tasks-search', 'input', (e) => { state.tasksSearch = e.target.value.trim(); renderTasks(); });
