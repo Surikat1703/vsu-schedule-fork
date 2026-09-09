@@ -810,7 +810,7 @@ function renderDayPanel() {
                 ${n.body ? `<div class="note-body">${esc(n.body)}</div>` : ''}
                 <div class="note-meta">${n.time ? '⏰ ' + esc(n.time) : 'Весь день'}${remindStr}${n.dirty ? ' · ожидает синх.' : ''}</div>
             </div>
-            <button class="task-done${done ? ' is-done' : ''}" data-toggle-done="${esc(n.client_id)}" title="Отметить выполненным">${done ? '✅' : '○'}</button>
+            <button class="task-done${done ? ' is-done' : ''}" data-toggle-done="${esc(n.client_id)}" title="Отметить выполненным">${done ? '✅' : '☐'}</button>
         </div>`;
     }
     if (!html) html = `<p class="muted small center" style="padding:14px 0">Пусто. Добавь заметку!</p>`;
@@ -2155,11 +2155,10 @@ function openLessonNoteModal(lessonDateIso, lessonText, lessonTime) {
     m.dataset.clickDate = lessonDateIso || '';
     m.dataset.nextDate = (nxt && nxt.iso) || '';
     $('lesson-note-today').textContent = lessonDateIso ? 'На день клика (' + formatDateShort(lessonDateIso) + ')' : 'На день клика';
-    $('lesson-note-next').textContent = nxt ? 'Следующую пару (' + formatDateShort(nxt.iso) + ')' : 'Следующую пару';
+    $('lesson-note-next').textContent = nxt ? 'На следующую пару (' + formatDateShort(nxt.iso) + ')' : 'На следующую пару';
     setPrioUI('lesson-note-prio', prio);
     m.dataset.prefillTitle = parts.subject || lessonText;
-    m.dataset.prefillBody =
-        `${lessonTime}${parts.room ? ' · ауд. ' + parts.room : ''}${parts.teacher ? ' · ' + parts.teacher : ''}`.trim();
+    m.dataset.prefillBody = '';
     m.dataset.prefillTime = lessonTime || '';
     openModal('lesson-note-modal');
 }
@@ -2227,7 +2226,7 @@ function renderTasks() {
         const overdue = n.date && n.date < todayIso && !done;
         const inWeek = n.date >= weekMon && n.date <= weekSun;
         return `<div class="note-card task-card prio-${pr}${done ? ' done' : ''}" data-note="${esc(n.client_id)}">
-            <button class="task-done${done ? ' is-done' : ''}" data-toggle-done="${esc(n.client_id)}" title="Отметить выполненным">${done ? '✅' : '○'}</button>
+            <button class="task-done${done ? ' is-done' : ''}" data-toggle-done="${esc(n.client_id)}" title="Отметить выполненным">${done ? '✅' : '☐'}</button>
             <div class="note-info">
                 <div class="note-title">${esc(titleWithoutPrio(titleWithoutDone(n.title)) || 'Без названия')}</div>
                 ${n.body ? `<div class="note-body">${esc(n.body)}</div>` : ''}

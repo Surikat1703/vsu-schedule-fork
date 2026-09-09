@@ -592,7 +592,7 @@ label { display: block; font-size: 13px; color: var(--text-muted); margin: 10px 
 #view-tasks .segmented { margin-bottom: 10px; }
 #view-tasks .form-card { margin-top: 6px; }
 #tasks-list { margin-top: 8px; }
-.task-done { flex: 0 0 auto; width: 30px; height: 30px; border: none; background: transparent; font-size: 18px; line-height: 1; color: var(--text-muted); cursor: pointer; align-self: center; }
+.task-done { flex: 0 0 auto; width: 40px; height: 40px; border: none; background: transparent; font-size: 28px; line-height: 1; color: var(--text-muted); cursor: pointer; align-self: center; display: inline-flex; align-items: center; justify-content: center; }
 .task-done.is-done { color: var(--green, #34d399); }
 #tasks-list .task-card, #day-panel-content .note-card { display: flex; gap: 8px; align-items: flex-start; }
 #tasks-list .task-card .note-info, #day-panel-content .note-card .note-info { flex: 1 1 auto; min-width: 0; }
