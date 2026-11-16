@@ -1,6 +1,10 @@
 package com.personal.vsu.schedule;
 
 import android.app.Activity;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.view.Display;
 import android.view.View;
@@ -44,6 +48,32 @@ public class AodModePlugin extends Plugin {
         });
         JSObject ret = new JSObject();
         ret.put("active", on);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void getBattery(PluginCall call) {
+        JSObject ret = new JSObject();
+        int level = -1;
+        boolean charging = false;
+        try {
+            Context ctx = getContext();
+            BatteryManager bm = (BatteryManager) ctx.getSystemService(Context.BATTERY_SERVICE);
+            if (bm != null) level = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY);
+            Intent status = ctx.registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+            if (status != null) {
+                int s = status.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+                charging = s == BatteryManager.BATTERY_STATUS_CHARGING || s == BatteryManager.BATTERY_STATUS_FULL;
+                if (level < 0) {
+                    int lvl = status.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+                    int scale = status.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
+                    if (lvl >= 0 && scale > 0) level = Math.round(lvl * 100f / scale);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        ret.put("level", level);
+        ret.put("charging", charging);
         call.resolve(ret);
     }
 

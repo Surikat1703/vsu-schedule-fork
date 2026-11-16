@@ -821,7 +821,7 @@ function aodCompute() {
 
 function aodVisible() {
     const scr = $('aod-screen');
-    return !!scr && !scr.classList.contains('hidden');
+    return !!scr && !scr.classList.contains('hidden') && !scr.classList.contains('closing');
 }
 
 function setNodeText(el, txt) {
@@ -857,6 +857,8 @@ function updateAod() {
     state.aodPrecise = (c.secMain != null && c.secMain <= AOD_SECONDS_BELOW)
         || (c.secSub != null && c.secSub <= AOD_SECONDS_BELOW);
 
+    updateAodBattery();
+
     // Часы перерисовываем только при смене минуты — лишние кадры не нужны
     const d = new Date();
     const hm = pad2(d.getHours()) + ':' + pad2(d.getMinutes());
@@ -880,19 +882,74 @@ async function aodNative(active) {
     } catch (e) { /* браузер может запретить без жеста */ }
 }
 
+// ─── Батарея на AOD ──────────────────────────────────────────────────────────
+const aodBatt = { level: null, charging: false, at: 0 };
+
+async function aodReadBattery() {
+    const plugin = window.Capacitor?.Plugins?.AodMode;
+    if (plugin?.getBattery) {
+        try {
+            const r = await plugin.getBattery();
+            if (r && r.level != null && r.level >= 0) return { level: r.level, charging: !!r.charging };
+        } catch (e) { /* ниже — веб-вариант */ }
+    }
+    try {
+        const b = await navigator.getBattery?.();
+        if (b) return { level: Math.round(b.level * 100), charging: !!b.charging };
+    } catch (e) { }
+    return null;
+}
+
+function renderAodBattery() {
+    const wrap = $('aod-batt');
+    if (!wrap) return;
+    const fill = $('aod-batt-fill');
+    const pct = $('aod-batt-pct');
+    if (!fill || !pct) return;
+    if (aodBatt.level == null) { pct.textContent = '—'; return; }
+    const lvl = Math.max(0, Math.min(100, aodBatt.level));
+    fill.style.width = Math.max(6, lvl) + '%';
+    pct.textContent = lvl + '%';
+    wrap.classList.toggle('charging', aodBatt.charging);
+    wrap.classList.toggle('low', lvl <= 15 && !aodBatt.charging);
+}
+
+// Заряд меняется медленно — опрашиваем не чаще раза в минуту
+async function updateAodBattery(force) {
+    if (!force && Date.now() - aodBatt.at < 60000) return;
+    aodBatt.at = Date.now();
+    const b = await aodReadBattery();
+    if (!b) return;
+    aodBatt.level = b.level;
+    aodBatt.charging = b.charging;
+    renderAodBattery();
+}
+
+let aodCloseTimer = null;
+
 function aodOpen() {
     const scr = $('aod-screen');
     if (!scr) return;
+    clearTimeout(aodCloseTimer);
+    scr.classList.remove('closing');
     state.aodClock = null;
     state.aodNext = 0;
     scr.classList.remove('hidden');
     updateAod();
+    updateAodBattery(true);
     aodWakeLock(true);
     aodNative(true);
 }
 
 function aodClose() {
-    $('aod-screen')?.classList.add('hidden');
+    const scr = $('aod-screen');
+    if (!scr || scr.classList.contains('hidden')) return;
+    clearTimeout(aodCloseTimer);
+    scr.classList.add('closing');
+    aodCloseTimer = setTimeout(() => {
+        scr.classList.add('hidden');
+        scr.classList.remove('closing');
+    }, 180);
     aodWakeLock(false);
     aodNative(false);
 }
@@ -2599,6 +2656,8 @@ function bindEvents() {
     });
     on('toggle-aod-btn', 'click', toggleAod);
     on('aod-screen', 'click', toggleAod);
+    // Тап по карточке таймера на главном экране тоже включает AOD
+    on('countdown-card', 'click', () => { if (!aodVisible()) toggleAod(); });
     document.addEventListener('visibilitychange', () => {
         if (document.hidden) return;
         if (!state.aodMode) return;

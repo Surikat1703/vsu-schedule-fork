@@ -698,3 +698,45 @@ label { display: block; font-size: 13px; color: var(--text-muted); margin: 10px 
     position: absolute; bottom: 26px; left: 0; right: 0;
     text-align: center; font-size: 11px; letter-spacing: .5px; color: #3a3a3a;
 }
+/* AOD: индикатор батареи */
+.aod-batt {
+    position: absolute; right: 18px; top: calc(14px + env(safe-area-inset-top, 0px));
+    display: flex; align-items: center; gap: 7px;
+    font-size: 13px; color: #8b93a1; font-variant-numeric: tabular-nums;
+    letter-spacing: .3px;
+}
+.aod-batt-shell {
+    position: relative; display: block;
+    width: 26px; height: 13px; padding: 1.5px; box-sizing: border-box;
+    border: 1.5px solid #4a5160; border-radius: 3.5px;
+}
+.aod-batt-shell::after {
+    content: ''; position: absolute; right: -4px; top: 50%;
+    width: 2.5px; height: 5px; transform: translateY(-50%);
+    background: #4a5160; border-radius: 0 2px 2px 0;
+}
+.aod-batt-shell > i {
+    display: block; height: 100%; width: 0;
+    background: #cfd6e4; border-radius: 2px;
+    transition: width .45s ease;
+}
+.aod-batt.charging .aod-batt-shell > i { background: #5ad17a; }
+.aod-batt.charging .aod-batt-pct::before { content: '⚡'; margin-right: 3px; }
+.aod-batt.low .aod-batt-shell > i { background: #ff6b6b; }
+
+/* AOD: анимация появления и исчезновения */
+.aod-screen { animation: aodFadeIn .26s ease-out both; }
+.aod-screen.closing { animation: aodFadeOut .18s ease-in both; pointer-events: none; }
+.aod-clock { animation: aodRise .38s cubic-bezier(.22, .9, .24, 1) both; }
+.aod-batt { animation: aodRise .34s cubic-bezier(.22, .9, .24, 1) both; }
+.aod-grid { animation: aodRise .44s .05s cubic-bezier(.22, .9, .24, 1) both; }
+.aod-lesson { animation: aodRise .5s .1s cubic-bezier(.22, .9, .24, 1) both; }
+.aod-hint { animation: aodFadeIn .5s .12s ease both; }
+@keyframes aodFadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes aodFadeOut { from { opacity: 1; } to { opacity: 0; } }
+@keyframes aodRise {
+    from { opacity: 0; transform: translateY(14px) scale(.97); }
+    to { opacity: 1; transform: none; }
+}
+.card.countdown-card { cursor: pointer; }
+.card.countdown-card:active { transform: scale(.995); }
