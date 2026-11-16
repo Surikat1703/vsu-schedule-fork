@@ -66,6 +66,36 @@
             </div>
             <div id="schedule-list" class="cards-list"></div>
             <div id="day-tasks" class="cards-list"></div>
+            <div class="schedule-tools">
+                <button id="edit-day-btn" class="small-btn">✏️ Редактировать пары</button>
+                <button id="toggle-empty-btn" class="small-btn">👁 Скрыть пустые по краям</button>
+                <button id="toggle-aod-btn" class="small-btn">📱 Вкл. AOD</button>
+            </div>
+            <div id="schedule-edit-inline" class="card schedule-editor hidden">
+                <div class="schedule-editor-head">
+                    <h3 id="schedule-edit-title">Расписание дня</h3>
+                    <button id="schedule-edit-close" class="small-btn">Свернуть</button>
+                </div>
+                <p class="muted small" id="schedule-edit-sub"></p>
+                <div id="schedule-edit-rows"></div>
+                <button id="schedule-edit-add" class="secondary-btn mt8">+ Добавить пару</button>
+                <label class="mt8">Когда применять правку</label>
+                <select id="schedule-edit-scope">
+                    <option value="once">Только этот день</option>
+                    <option value="weekly">Каждую неделю (оба типа недель)</option>
+                    <option value="wt">Только выбранный тип недели</option>
+                </select>
+                <p class="muted small" id="schedule-edit-scope-hint"></p>
+                <label class="mt8">Тип недели для правки</label>
+                <div class="segmented" id="schedule-edit-wt">
+                    <button class="seg-btn" data-wt="0">Числитель</button>
+                    <button class="seg-btn" data-wt="1">Знаменатель</button>
+                </div>
+                <div class="row2 mt8">
+                    <button id="schedule-edit-reset" class="secondary-btn danger">Сбросить правку</button>
+                    <button id="schedule-edit-save" class="primary-btn">Сохранить</button>
+                </div>
+            </div>
         </section>
 
         <!-- ═══ ЗАДАЧИ ═══ -->
@@ -232,10 +262,20 @@
                     <option value="1">За 1 час до пары</option>
                     <option value="-1">Только во время пар</option>
                 </select>
+                <p class="muted small">Отсчёт в приложении и в островке OriginOS появляется за выбранное время до пары.</p>
                 <div class="row-flex mt8">
                     <span>Вкладка «Сессия»</span>
                     <label class="switch"><input type="checkbox" id="session-toggle"><span class="slider"></span></label>
                 </div>
+            </div>
+
+            <div class="card">
+                <h3>Расписание</h3>
+                <div class="row-flex">
+                    <span>Скрывать пустые пары по краям</span>
+                    <label class="switch"><input type="checkbox" id="hide-empty-toggle"><span class="slider"></span></label>
+                </div>
+                <p class="muted small">Убирает пустые слоты до и после занятий. Окна между парами остаются видимыми. Настройка локальная.</p>
             </div>
 
             <div class="card">
@@ -407,6 +447,10 @@
     </div>
     <input type="text" id="note-title" placeholder="Заголовок" maxlength="80">
     <textarea id="note-body" placeholder="Текст заметки…"></textarea>
+    <label class="mt8">Вложения <span class="muted small">(только на этом устройстве)</span></label>
+    <div id="note-attachments" class="attach-list"></div>
+    <input type="file" id="note-file-input" multiple class="hidden">
+    <button id="note-attach-btn" class="secondary-btn">📎 Прикрепить файл или фото</button>
     <div class="row2">
         <div><label>Дата</label><input type="date" id="note-date"></div>
         <div><label>Время</label><input type="time" id="note-time"></div>

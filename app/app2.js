@@ -32,6 +32,17 @@ const state = {
     tasksSearch: '',
     prefill: null,         // {title, date} — автозаполнение при создании из пары
     lessonClickDate: null, // ISO дня, по которому кликнули в паре (для кнопки «на день клика»)
+    // ── Локальные расширения ──
+    // ── Локальные расширения ──
+    hideEmpty: localStorage.getItem('hideEmpty') === '1',
+    aodMode: localStorage.getItem('aodMode') === '1',
+    schedOverrides: { weekly: {}, once: {} }, // локальные правки расписания
+    editingSchedule: null, // { day, iso, wt } — открытый редактор дня
+    noteDraftId: null,     // id заметки, к которой привязываются вложения
+    noteAttachments: [],   // вложения, выбранные в открытой заметке
+    removedAttachments: [],// id удалённых вложений (удаляем при сохранении)
+    noteObjectUrls: [],    // blob-URL для превью, чтобы освободить при закрытии
+    attachCounts: {},      // note_id → количество вложений
 };
 
 // Приоритет хранится эмодзи в КОНЦЕ названия заметки: так заметка остаётся
@@ -81,7 +92,7 @@ function composeTitle(base, prio, done) {
     return e ? (t + ' ' + e) : t;
 }
 
-const APP_VERSION = '1.2.5';
+const APP_VERSION = '1.2.6';
 // Цветные метки типов занятий: на стенде включены, в проде пока выключены
 const FEATURE_LESSON_COLORS = true;
 
@@ -239,11 +250,16 @@ function idbOpen() {
         };
         const timer = setTimeout(() => finish(null, 'таймаут открытия базы'), 5000);
         try {
-            const req = indexedDB.open('vsu-pwa', 1);
+            const req = indexedDB.open('vsu-pwa', 2);
             req.onupgradeneeded = (e) => {
                 const db = e.target.result;
                 if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
                 if (!db.objectStoreNames.contains('notes')) db.createObjectStore('notes', { keyPath: 'client_id' });
+                if (!db.objectStoreNames.contains('files')) {
+                    const files = db.createObjectStore('files', { keyPath: 'id' });
+                    files.createIndex('note_id', 'note_id', { unique: false });
+                }
+                if (!db.objectStoreNames.contains('fileBlobs')) db.createObjectStore('fileBlobs', { keyPath: 'id' });
             };
             req.onsuccess = (e) => { clearTimeout(timer); finish(e.target.result); };
             req.onerror = () => { clearTimeout(timer); finish(null, req.error); };
@@ -289,7 +305,68 @@ function notesReplaceAll(list) {
     return idbTx('notes', 'readwrite', (os) => { os.clear(); list.forEach((n) => os.put(n)); });
 }
 function idbClearAll() {
-    return Promise.all([idbTx('kv', 'readwrite', (os) => os.clear()), idbTx('notes', 'readwrite', (os) => os.clear())]);
+    return Promise.all([
+        idbTx('kv', 'readwrite', (os) => os.clear()),
+        idbTx('notes', 'readwrite', (os) => os.clear()),
+        idbTx('files', 'readwrite', (os) => os.clear()),
+        idbTx('fileBlobs', 'readwrite', (os) => os.clear()),
+    ]);
+}
+
+// ─── Вложения к заметкам (хранятся только локально) ──────────────────────────
+function filesAll() {
+    return new Promise((resolve) => {
+        if (!idb) return resolve([]);
+        const req = idb.transaction('files', 'readonly').objectStore('files').getAll();
+        req.onsuccess = () => resolve(req.result || []);
+        req.onerror = () => resolve([]);
+    });
+}
+function filesForNote(noteId) {
+    return new Promise((resolve) => {
+        if (!idb) return resolve([]);
+        const req = idb.transaction('files', 'readonly').objectStore('files').index('note_id').getAll(noteId);
+        req.onsuccess = () => resolve(req.result || []);
+        req.onerror = () => resolve([]);
+    });
+}
+function fileBlobGet(id) {
+    return new Promise((resolve) => {
+        if (!idb) return resolve(null);
+        const req = idb.transaction('fileBlobs', 'readonly').objectStore('fileBlobs').get(id);
+        req.onsuccess = () => resolve(req.result?.blob || null);
+        req.onerror = () => resolve(null);
+    });
+}
+function fileSave(meta, blob) {
+    return new Promise((resolve, reject) => {
+        if (!idb) return resolve();
+        const tx = idb.transaction(['files', 'fileBlobs'], 'readwrite');
+        tx.objectStore('files').put(meta);
+        tx.objectStore('fileBlobs').put({ id: meta.id, blob });
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+    });
+}
+function fileDelete(id) {
+    return new Promise((resolve) => {
+        if (!idb) return resolve();
+        const tx = idb.transaction(['files', 'fileBlobs'], 'readwrite');
+        tx.objectStore('files').delete(id);
+        tx.objectStore('fileBlobs').delete(id);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+    });
+}
+async function filesDeleteForNote(noteId) {
+    const list = await filesForNote(noteId);
+    await Promise.all(list.map((f) => fileDelete(f.id)));
+}
+async function loadAttachCounts() {
+    const all = await filesAll();
+    const counts = {};
+    all.forEach((f) => { counts[f.note_id] = (counts[f.note_id] || 0) + 1; });
+    state.attachCounts = counts;
 }
 
 // ─── API ──────────────────────────────────────────────────────────────────────
@@ -413,6 +490,32 @@ function logout() {
     idbClearAll().finally(() => location.reload());
 }
 
+// ─── Синхронизация расписания с нативным сервисом островка OriginOS ──────────
+function syncScheduleToNative() {
+    try {
+        const plugin = window.Capacitor?.Plugins?.ClassTimer;
+        if (plugin && plugin.setScheduleData && state.schedules) {
+            const eff = effectiveSchedules();
+            plugin.setScheduleData({
+                sched0: JSON.stringify(eff[0] || {}),
+                sched1: JSON.stringify(eff[1] || {}),
+                anchorWeekType: state.anchor?.weekType ?? 0,
+                anchorMonday: state.anchor?.monday ?? '',
+                vacationMode: !!state.profile?.vacation_mode,
+                showTimer: (state.profile?.show_timer ?? 1) !== 0,
+                timerStartMode: Number(state.profile?.timer_start_mode ?? 0),
+                dateOverrides: JSON.stringify(ensureOverrides().once || {})
+            }).then(() => {
+                console.log('[ClassTimer] Расписание синхронизировано с островком OriginOS');
+            }).catch((err) => {
+                console.warn('[ClassTimer] Ошибка синхронизации с островком:', err);
+            });
+        }
+    } catch (e) {
+        console.warn('[ClassTimer] sync error:', e);
+    }
+}
+
 // ─── Загрузка данных ──────────────────────────────────────────────────────────
 async function loadFromCache() {
     state.profile = await kvGet('profile') || null;
@@ -420,9 +523,12 @@ async function loadFromCache() {
     state.drift = await kvGet('drift') || 0;
     state.schedules[0] = await kvGet('sched0') || null;
     state.schedules[1] = await kvGet('sched1') || null;
+    state.schedOverrides = (await kvGet('schedOverrides')) || { weekly: {}, once: {} };
     state.exams = await kvGet('exams') || null;
     state.meta = await kvGet('meta') || null;
     state.notes = await notesAll();
+    await loadAttachCounts();
+    syncScheduleToNative();
 }
 
 async function refreshAll() {
@@ -459,6 +565,7 @@ async function refreshAll() {
         if (meta) { state.meta = meta; await kvSet('meta', meta); }
         await kvSet('lastSync', Date.now());
         await syncNotes();
+        syncScheduleToNative();
         setOffline(false);
         renderAll();
     } catch (e) {
@@ -576,6 +683,300 @@ function currentSchedDay() {
     return DAYS_FULL[idx === 6 ? 0 : idx];
 }
 
+// ─── Локальные правки расписания ─────────────────────────────────────────────
+// once  — правка только на конкретную дату (YYYY-MM-DD);
+// weekly — правка дня недели для типа недели (`wt|День`).
+// Разовая правка важнее правки дня недели.
+function ensureOverrides() {
+    if (!state.schedOverrides || typeof state.schedOverrides !== 'object') {
+        state.schedOverrides = { weekly: {}, once: {} };
+    }
+    if (!state.schedOverrides.weekly) state.schedOverrides.weekly = {};
+    if (!state.schedOverrides.once) state.schedOverrides.once = {};
+    return state.schedOverrides;
+}
+
+function weeklyOverride(wt, day) {
+    const ov = ensureOverrides().weekly[`${wt}|${day}`];
+    return Array.isArray(ov) ? ov : null;
+}
+
+function onceOverride(iso) {
+    const map = ensureOverrides().once;
+    if (!iso || !Object.prototype.hasOwnProperty.call(map, iso)) return null;
+    return Array.isArray(map[iso]) ? map[iso] : null;
+}
+
+function dayLessonsFor(wt, day, iso) {
+    const once = onceOverride(iso);
+    if (once) return once;
+    const weekly = weeklyOverride(wt, day);
+    if (weekly) return weekly;
+    return (state.schedules[wt] && state.schedules[wt][day]) || [];
+}
+
+function effectiveSchedules() {
+    const out = { 0: {}, 1: {} };
+    for (const wt of [0, 1]) {
+        out[wt] = { ...(state.schedules[wt] || {}) };
+        DAYS_FULL.forEach((day) => {
+            const ov = weeklyOverride(wt, day);
+            if (ov) out[wt][day] = ov.slice();
+        });
+    }
+    return out;
+}
+
+function displayedDateIso() {
+    const day = currentSchedDay();
+    const idx = DAYS_FULL.indexOf(day);
+    if (idx < 0) return null;
+    const d = new Date(displayMonday());
+    d.setUTCDate(d.getUTCDate() + idx);
+    return isoFromUTCParts(d);
+}
+
+function weekTypeLabel(wt) {
+    return wt === 0 ? 'числитель' : 'знаменатель';
+}
+
+// input[type=time] принимает только HH:MM, а в расписании встречается «9:45».
+function normTime(t) {
+    const m = String(t || '').trim().match(/^(\d{1,2}):(\d{2})$/);
+    if (!m) return '';
+    return pad2(Math.min(23, +m[1])) + ':' + m[2];
+}
+
+function updateEmptyToggleLabel() {
+    const btn = $('toggle-empty-btn');
+    if (!btn) return;
+    btn.textContent = state.hideEmpty ? '👁 Показать пустые по краям' : '👁 Скрыть пустые по краям';
+}
+
+function updateAodButton() {
+    const btn = $('toggle-aod-btn');
+    if (!btn) return;
+    btn.textContent = state.aodMode ? '📱 Выкл. AOD' : '📱 Вкл. AOD';
+}
+
+function toggleAod() {
+    state.aodMode = !state.aodMode;
+    localStorage.setItem('aodMode', state.aodMode ? '1' : '0');
+    updateAodButton();
+    updateCountdown();
+}
+
+// Скрываем только пустые слоты до первой и после последней пары.
+// Окна между парами (пустые слоты внутри дня) остаются видимыми.
+function visibleLessons(lessons) {
+    if (!state.hideEmpty) return lessons;
+    const firstReal = lessons.findIndex((l) => !l.empty);
+    if (firstReal < 0) return lessons;
+    let lastReal = lessons.length - 1;
+    while (lastReal > firstReal && lessons[lastReal].empty) lastReal--;
+    return lessons.slice(firstReal, lastReal + 1);
+}
+
+// ─── Редактор расписания дня ──────────────────────────────────────────────────
+const DEFAULT_SLOTS = [
+    ['08:00', '09:35'], ['09:45', '11:20'], ['11:30', '13:05'], ['13:25', '15:00'],
+    ['15:10', '16:45'], ['16:55', '18:30'], ['18:40', '20:00'], ['20:10', '21:30'],
+];
+
+function openScheduleEditor() {
+    const day = currentSchedDay();
+    const wt = shownWeekType();
+    const iso = displayedDateIso();
+    if (!iso || !day) { toast('Не удалось определить день'); return; }
+    state.editingSchedule = { day, wt, iso };
+
+    $('schedule-edit-title').textContent = `Расписание: ${day}, ${formatDateShort(iso)}`;
+    $('schedule-edit-sub').textContent = `${weekName(wt)} неделя · правки хранятся только на этом устройстве`;
+
+    const scopeSel = $('schedule-edit-scope');
+    scopeSel.querySelector('option[value="once"]').textContent = `Только ${formatDateShort(iso)}`;
+    scopeSel.querySelector('option[value="wt"]').textContent = `Только ${weekTypeLabel(wt)}`;
+
+    let scope = 'once';
+    if (onceOverride(iso)) scope = 'once';
+    else if (weeklyOverride(0, day) && weeklyOverride(1, day)) scope = 'weekly';
+    else if (weeklyOverride(wt, day)) scope = 'wt';
+    scopeSel.value = scope;
+
+    setScheduleEditWt(wt);
+    const rows = dayLessonsFor(wt, day, iso)
+        .map(parseLesson).filter((l) => !l.empty)
+        .map((l) => ({ start: normTime(l.start), end: normTime(l.end), text: l.text }));
+    renderScheduleEditRows(rows);
+    updateScheduleScopeUI();
+    const box = $('schedule-edit-inline');
+    box.classList.remove('hidden');
+    box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function closeScheduleEditor() {
+    const box = $('schedule-edit-inline');
+    if (box) box.classList.add('hidden');
+    state.editingSchedule = null;
+}
+
+function buildScheduleEditRow(row) {
+    const el = document.createElement('div');
+    el.className = 'sched-edit-row';
+
+    const start = document.createElement('input');
+    start.type = 'time';
+    start.value = normTime(row.start) || '08:00';
+    const end = document.createElement('input');
+    end.type = 'time';
+    end.value = normTime(row.end) || '09:35';
+    const text = document.createElement('input');
+    text.type = 'text';
+    text.className = 'sched-text';
+    text.placeholder = 'Предмет, ауд. 123';
+    text.value = row.text || '';
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'sched-del';
+    del.textContent = '✕';
+    del.title = 'Удалить пару';
+    del.addEventListener('click', () => {
+        el.remove();
+        if (!$('schedule-edit-rows').querySelector('.sched-edit-row')) renderScheduleEditRows([]);
+    });
+
+    el.append(start, end, text, del);
+    return el;
+}
+
+function renderScheduleEditRows(rows) {
+    const box = $('schedule-edit-rows');
+    box.innerHTML = '';
+    if (!rows.length) {
+        box.innerHTML = '<div class="sched-edit-empty">Пар нет. Добавь первую кнопкой ниже или сохрани пустым — день станет выходным.</div>';
+        return;
+    }
+    rows.forEach((r) => box.appendChild(buildScheduleEditRow(r)));
+}
+
+function addScheduleEditRow() {
+    const box = $('schedule-edit-rows');
+    box.querySelector('.sched-edit-empty')?.remove();
+    const used = [...box.querySelectorAll('.sched-edit-row')]
+        .map((row) => row.querySelector('input[type="time"]')?.value);
+    const slot = DEFAULT_SLOTS.find(([s]) => !used.includes(s)) || ['', ''];
+    box.appendChild(buildScheduleEditRow({ start: slot[0], end: slot[1], text: '' }));
+}
+
+function setScheduleEditWt(wt) {
+    document.querySelectorAll('#schedule-edit-wt .seg-btn').forEach((b) => {
+        b.classList.toggle('active', +b.dataset.wt === wt);
+    });
+}
+
+function currentEditWt() {
+    const active = document.querySelector('#schedule-edit-wt .seg-btn.active');
+    return active ? +active.dataset.wt : (state.editingSchedule?.wt ?? 0);
+}
+
+function updateScheduleScopeUI() {
+    const scope = $('schedule-edit-scope').value;
+    const wtBox = $('schedule-edit-wt');
+    wtBox.classList.toggle('disabled', scope !== 'wt');
+    document.querySelectorAll('#schedule-edit-wt .seg-btn').forEach((b) => { b.disabled = scope !== 'wt'; });
+    const hints = {
+        once: 'Разовая правка: изменит только этот день. Остальные дни и недели не тронет.',
+        weekly: 'Правка навсегда: этот день недели станет таким и в числителе, и в знаменателе.',
+        wt: 'Правка навсегда только для выбранного типа недели.',
+    };
+    $('schedule-edit-scope-hint').textContent = hints[scope] || '';
+}
+
+function collectScheduleEditRows() {
+    const rows = [...$('schedule-edit-rows').querySelectorAll('.sched-edit-row')];
+    const out = [];
+    for (const row of rows) {
+        const times = row.querySelectorAll('input[type="time"]');
+        const start = times[0]?.value || '';
+        const end = times[1]?.value || '';
+        const text = row.querySelector('.sched-text')?.value.trim() || '';
+        if (!start || !end || !text) { toast('Заполни время и предмет у каждой пары'); return null; }
+        if (parseTimeMin(end) <= parseTimeMin(start)) { toast('Конец пары должен быть позже начала'); return null; }
+        out.push({ start, end, text });
+    }
+    out.sort((a, b) => parseTimeMin(a.start) - parseTimeMin(b.start));
+    return out;
+}
+
+function rawLessonFromEdit(r) {
+    return `🔹 *${normTime(r.start)} - ${normTime(r.end)}*: ${r.text}`;
+}
+
+// Окна (пустые слоты) между парами не показываются в редакторе, но должны
+// сохраниться в дне. Убираем только те, на место которых поставили новую пару.
+function mergeEditedWithWindows(ctx, rows) {
+    const source = dayLessonsFor(ctx.wt, ctx.day, ctx.iso);
+    const ranges = rows.map((r) => [parseTimeMin(r.start), parseTimeMin(r.end)]);
+    const keptWindows = source.filter((raw) => {
+        const l = parseLesson(raw);
+        if (!l.empty) return false;
+        const s = parseTimeMin(l.start), e = parseTimeMin(l.end);
+        if (!s || !e) return false;
+        return !ranges.some(([rs, re]) => Math.max(rs, s) < Math.min(re, e));
+    });
+    const all = [...keptWindows, ...rows.map(rawLessonFromEdit)];
+    all.sort((a, b) => parseTimeMin(parseLesson(a).start) - parseTimeMin(parseLesson(b).start));
+    return all;
+}
+
+async function saveScheduleEdit() {
+    const ctx = state.editingSchedule;
+    if (!ctx) return;
+    const rows = collectScheduleEditRows();
+    if (rows === null) return;
+    const items = mergeEditedWithWindows(ctx, rows);
+    const ov = ensureOverrides();
+    const scope = $('schedule-edit-scope').value;
+
+    if (scope === 'once') {
+        ov.once[ctx.iso] = items;
+    } else if (scope === 'weekly') {
+        ov.weekly[`0|${ctx.day}`] = items;
+        ov.weekly[`1|${ctx.day}`] = items;
+    } else {
+        ov.weekly[`${currentEditWt()}|${ctx.day}`] = items;
+    }
+
+    await kvSet('schedOverrides', ov);
+    closeScheduleEditor();
+    syncScheduleToNative();
+    renderAll();
+    haptic('medium');
+    toast('Расписание обновлено локально');
+}
+
+async function resetScheduleEdit() {
+    const ctx = state.editingSchedule;
+    if (!ctx) return;
+    const ov = ensureOverrides();
+    const scope = $('schedule-edit-scope').value;
+
+    if (scope === 'once') {
+        delete ov.once[ctx.iso];
+    } else if (scope === 'weekly') {
+        delete ov.weekly[`0|${ctx.day}`];
+        delete ov.weekly[`1|${ctx.day}`];
+    } else {
+        delete ov.weekly[`${currentEditWt()}|${ctx.day}`];
+    }
+
+    await kvSet('schedOverrides', ov);
+    closeScheduleEditor();
+    syncScheduleToNative();
+    renderAll();
+    toast('Правка сброшена');
+}
+
 function renderDaysNav() {
     const nav = $('days-nav');
     const monday = displayMonday();
@@ -591,6 +992,7 @@ function renderDaysNav() {
         btn.innerHTML = `${DAYS_SHORT[i]}<span class="day-num">${d.getUTCDate()}</span>`;
         btn.addEventListener('click', () => {
             state.schedDay = DAYS_FULL[i];
+            closeScheduleEditor();
             renderDaysNav();
             renderSchedule();
             haptic();
@@ -600,7 +1002,9 @@ function renderDaysNav() {
 }
 
 function renderSchedule() {
+    updateAodButton();
     const list = $('schedule-list');
+    updateEmptyToggleLabel();
 
     // Каникулы: прячем дни недели и показываем заглушку
     if (state.profile?.vacation_mode) {
@@ -617,17 +1021,18 @@ function renderSchedule() {
     list.classList.toggle('not-current', isoFromUTCParts(displayMonday()) !== todayMonday);
     const sched = state.schedules[wt];
     const day = currentSchedDay();
-
-    if (!sched) {
-        list.innerHTML = `<div class="rest-card"><span class="rest-emoji">📡</span>${state.online ? 'Загрузка расписания…' : 'Нет данных. Подключись к интернету один раз — и расписание сохранится.'}</div>`;
-        return;
-    }
-    const lessonsRaw = (sched[day] || []).map(parseLesson);
+    const iso = displayedDateIso();
+    const lessonsRaw = dayLessonsFor(wt, day, iso).map(parseLesson);
     const real = lessonsRaw.filter((l) => !l.empty);
     if (!real.length) {
-        list.innerHTML = `<div class="rest-card"><span class="rest-emoji">🎉</span>${esc(restText())}</div>`;
+        const text = sched
+            ? restText()
+            : (state.online ? 'Загрузка расписания…' : 'Нет данных. Подключись к интернету один раз — и расписание сохранится.');
+        list.innerHTML = `<div class="rest-card"><span class="rest-emoji">${sched ? '🎉' : '📡'}</span>${esc(text)}</div>`;
         return;
     }
+
+    const shown = visibleLessons(lessonsRaw);
 
     // Подсветка текущей пары — только если смотрим реальное «сегодня»
     const now = botNow();
@@ -635,7 +1040,7 @@ function renderSchedule() {
         wt === weekTypeForDate(isoFromUTCParts(now));
     const nowMin = botMinutes(now);
 
-    list.innerHTML = lessonsRaw.map((l, li) => {
+    list.innerHTML = shown.map((l, li) => {
         const sMin = parseTimeMin(l.start), eMin = parseTimeMin(l.end);
         const isCurrent = isActualToday && !l.empty && nowMin >= sMin && nowMin < eMin;
         const colorsOn = FEATURE_LESSON_COLORS && (state.profile?.lesson_colors_on ?? 1) === 1;
@@ -676,12 +1081,13 @@ function renderDayTasks() {
     box.innerHTML = `<div class="section-title">📌 Задачи на ${esc(formatDateShort(iso))}</div>` + list.map((n) => {
         const done = doneFromTitle(n.title);
         const pr = prioOf(n);
+        const ac = state.attachCounts[n.client_id] || 0;
         return `<div class="note-card task-card prio-${pr}${done ? ' done' : ''}" data-note="${esc(n.client_id)}">
             <button class="task-done${done ? ' is-done' : ''}" data-toggle-done="${esc(n.client_id)}" title="Отметить выполненным">${done ? '✅' : '☐'}</button>
             <div class="note-info">
                 <div class="note-title">${esc(titleWithoutPrio(titleWithoutDone(n.title)) || 'Без названия')}</div>
                 ${n.body ? `<div class="note-body">${esc(n.body)}</div>` : ''}
-                <div class="note-meta">${n.time ? '⏰ ' + esc(n.time) : ''}</div>
+                <div class="note-meta">${n.time ? '⏰ ' + esc(n.time) : ''}${ac ? ` · <span class="attach-badge">📎 ${ac}</span>` : ''}</div>
             </div></div>`;
     }).join('');
     document.querySelectorAll('#day-tasks .task-card[data-note]').forEach((el) => {
@@ -709,10 +1115,10 @@ function updateCountdown() {
     const now = botNow();
     const todayIdx = botDayIdx(now);
     if (todayIdx === 6) { card.classList.add('hidden'); return; }
-    const wt = weekTypeForDate(isoFromUTCParts(now));
-    const sched = state.schedules[wt];
-    if (!sched) { card.classList.add('hidden'); return; }
-    const lessons = (sched[DAYS_FULL[todayIdx]] || []).map(parseLesson).filter((l) => !l.empty);
+    const todayIso = isoFromUTCParts(now);
+    const wt = weekTypeForDate(todayIso);
+    const lessons = dayLessonsFor(wt, DAYS_FULL[todayIdx], todayIso)
+        .map(parseLesson).filter((l) => !l.empty);
     if (!lessons.length) { card.classList.add('hidden'); return; }
 
     const nowSec = botMinutes(now) * 60 + now.getUTCSeconds();
@@ -723,6 +1129,12 @@ function updateCountdown() {
             label = 'До конца пары';
             target = e;
             sub = l.text;
+            if (state.aodMode) {
+                const elapsedSec = nowSec - s;
+                if (elapsedSec < 2700) sub = 'До перемены: ' + fmtHMS(2700 - elapsedSec);
+                else if (elapsedSec < 3000) { sub = 'Перемена: ' + fmtHMS(3000 - elapsedSec); label = 'Перемена'; }
+                else sub = 'Второй блок';
+            }
             break;
         }
         if (nowSec < s) {
@@ -737,6 +1149,7 @@ function updateCountdown() {
     }
     if (!label) { card.classList.add('hidden'); return; }
     card.classList.remove('hidden');
+
     $('countdown-label').textContent = label;
     $('countdown-timer').textContent = fmtHMS(target - nowSec);
     $('countdown-sub').textContent = sub.length > 70 ? sub.slice(0, 70) + '…' : sub;
@@ -756,9 +1169,8 @@ function dayHasLessons(iso) {
     const [y, m, d] = iso.split('-').map(Number);
     const wd = (new Date(y, m - 1, d).getDay() + 6) % 7;
     if (wd === 6) return false;
-    const sched = state.schedules[weekTypeForDate(iso)];
-    if (!sched) return false;
-    return (sched[DAYS_FULL[wd]] || []).map(parseLesson).some((l) => !l.empty);
+    const wt = weekTypeForDate(iso);
+    return dayLessonsFor(wt, DAYS_FULL[wd], iso).map(parseLesson).some((l) => !l.empty);
 }
 
 function notesForDate(iso) {
@@ -830,8 +1242,8 @@ function renderDayPanel() {
     }
 
     if (wd < 6 && !state.profile?.vacation_mode) {
-        const sched = state.schedules[wt];
-        const lessons = sched ? (sched[DAYS_FULL[wd]] || []).map(parseLesson).filter((l) => !l.empty) : [];
+        const lessons = dayLessonsFor(wt, DAYS_FULL[wd], iso)
+            .map(parseLesson).filter((l) => !l.empty);
         if (lessons.length) {
             html += `<div class="card" style="margin-bottom:8px">` + lessons.map((l) =>
                 `<div class="mini-lesson clickable" data-lesson-date="${iso}" data-lesson-time="${esc(l.start)}" data-lesson-text="${esc(l.text)}"><b>${esc(l.start)}</b><span>${esc(l.text)}</span></div>`).join('') + `</div>`;
@@ -842,11 +1254,12 @@ function renderDayPanel() {
     for (const n of notes) {
         const remindStr = n.remind_at ? ' · 🔔' : '';
         const done = doneFromTitle(n.title);
+        const ac = state.attachCounts[n.client_id] || 0;
         html += `<div class="note-card${done ? ' done' : ''}" data-note="${esc(n.client_id)}">
             <div class="note-info">
                 <div class="note-title">${esc(titleWithoutPrio(titleWithoutDone(n.title)) || 'Без названия')}</div>
                 ${n.body ? `<div class="note-body">${esc(n.body)}</div>` : ''}
-                <div class="note-meta">${n.time ? '⏰ ' + esc(n.time) : 'Весь день'}${remindStr}${n.dirty ? ' · ожидает синх.' : ''}</div>
+                <div class="note-meta">${n.time ? '⏰ ' + esc(n.time) : 'Весь день'}${remindStr}${ac ? ` · <span class="attach-badge">📎 ${ac}</span>` : ''}${n.dirty ? ' · ожидает синх.' : ''}</div>
             </div>
             <button class="task-done${done ? ' is-done' : ''}" data-toggle-done="${esc(n.client_id)}" title="Отметить выполненным">${done ? '✅' : '☐'}</button>
         </div>`;
@@ -870,6 +1283,126 @@ function openModal(id) {
 function closeModals() {
     $('modal-backdrop').classList.add('hidden');
     document.querySelectorAll('.modal').forEach((m) => m.classList.add('hidden'));
+    revokeNoteUrls();
+}
+
+// ─── Вложения к заметкам ─────────────────────────────────────────────────────
+function revokeNoteUrls() {
+    state.noteObjectUrls.forEach((u) => { try { URL.revokeObjectURL(u); } catch (e) { } });
+    state.noteObjectUrls = [];
+}
+
+function fileIcon(type, name) {
+    if ((type || '').startsWith('image/')) return '🖼️';
+    if ((type || '').includes('pdf')) return '📄';
+    if ((type || '').startsWith('video/')) return '🎬';
+    if ((type || '').startsWith('audio/')) return '🎵';
+    if (/\.(zip|rar|7z|tar|gz)$/i.test(name || '')) return '🗜️';
+    return '📎';
+}
+
+function fmtFileSize(bytes) {
+    if (!bytes) return '';
+    if (bytes < 1024) return bytes + ' Б';
+    if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + ' КБ';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' МБ';
+}
+
+function openAttachment(a) {
+    if (!a.blob) { toast('Файл недоступен'); return; }
+    const url = URL.createObjectURL(a.blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.download = a.name || 'file';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+function renderNoteAttachments() {
+    const box = $('note-attachments');
+    if (!box) return;
+    revokeNoteUrls();
+    box.innerHTML = '';
+    if (!state.noteAttachments.length) {
+        box.innerHTML = '<div class="attach-empty">Вложений нет. Фото задания или файл останутся только на этом устройстве.</div>';
+        return;
+    }
+    state.noteAttachments.forEach((a) => {
+        const item = document.createElement('div');
+        item.className = 'attach-item';
+
+        if ((a.type || '').startsWith('image/') && a.blob) {
+            const img = document.createElement('img');
+            img.className = 'attach-thumb';
+            img.alt = a.name || '';
+            img.src = URL.createObjectURL(a.blob);
+            state.noteObjectUrls.push(img.src);
+            item.appendChild(img);
+        } else {
+            const thumb = document.createElement('div');
+            thumb.className = 'attach-thumb';
+            thumb.textContent = fileIcon(a.type, a.name);
+            item.appendChild(thumb);
+        }
+
+        const info = document.createElement('div');
+        info.className = 'attach-info';
+        info.innerHTML = `<div class="attach-name">${esc(a.name || 'файл')}</div>` +
+            `<div class="attach-meta">${esc(fmtFileSize(a.size))}</div>`;
+        item.appendChild(info);
+
+        const actions = document.createElement('div');
+        actions.className = 'attach-actions';
+
+        const openBtn = document.createElement('button');
+        openBtn.type = 'button';
+        openBtn.className = 'attach-open';
+        openBtn.textContent = '↗';
+        openBtn.title = 'Открыть';
+        openBtn.addEventListener('click', () => openAttachment(a));
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'attach-del';
+        delBtn.textContent = '✕';
+        delBtn.title = 'Удалить';
+        delBtn.addEventListener('click', () => {
+            if (!a.isNew) state.removedAttachments.push(a.id);
+            state.noteAttachments = state.noteAttachments.filter((x) => x !== a);
+            renderNoteAttachments();
+        });
+
+        actions.append(openBtn, delBtn);
+        item.appendChild(actions);
+        box.appendChild(item);
+    });
+}
+
+function onNoteFilesPicked(e) {
+    const files = [...(e.target.files || [])];
+    e.target.value = '';
+    if (!files.length) return;
+    for (const file of files) {
+        if (file.size > 25 * 1024 * 1024) {
+            toast(`«${file.name}» больше 25 МБ — не прикреплён`);
+            continue;
+        }
+        state.noteAttachments.push({
+            id: uuid(),
+            note_id: state.noteDraftId,
+            name: file.name,
+            type: file.type,
+            size: file.size,
+            blob: file,
+            isNew: true,
+            created_at: Date.now(),
+        });
+    }
+    renderNoteAttachments();
 }
 
 function setPrioUI(segId, prio) {
@@ -877,8 +1410,13 @@ function setPrioUI(segId, prio) {
     state.notePrio = prio;
 }
 
-function openNoteModal(note) {
+async function openNoteModal(note) {
     state.editingNote = note || null;
+    state.noteDraftId = note?.client_id || uuid();
+    state.noteAttachments = [];
+    state.removedAttachments = [];
+    revokeNoteUrls();
+    $('note-file-input').value = '';
     const pre = (note ? null : state.prefill) || null;
     const baseTitle = note ? note.title : (pre ? pre.title : '');
     $('note-modal-title').textContent = note ? 'Заметка' : (pre ? 'Новая задача' : 'Новая заметка');
@@ -899,6 +1437,16 @@ function openNoteModal(note) {
     $('note-remind').value = remindVal;
     updateRemindHint();
     state.prefill = null;
+
+    if (note) {
+        const metas = await filesForNote(note.client_id);
+        state.noteAttachments = await Promise.all(metas.map(async (m) => ({
+            ...m,
+            blob: await fileBlobGet(m.id),
+            isNew: false,
+        })));
+    }
+    renderNoteAttachments();
     openModal('note-modal');
 }
 
@@ -936,8 +1484,9 @@ async function saveNote() {
         }
     }
     const wasDone = doneFromTitle(state.editingNote ? state.editingNote.title : '');
+    const noteId = state.editingNote?.client_id || state.noteDraftId || uuid();
     const note = {
-        client_id: state.editingNote?.client_id || uuid(),
+        client_id: noteId,
         date,
         time: $('note-time').value || null,
         title: composeTitle(title, state.notePrio, wasDone), body, remind_at,
@@ -948,8 +1497,34 @@ async function saveNote() {
     const idx = state.notes.findIndex((n) => n.client_id === note.client_id);
     if (idx >= 0) state.notes[idx] = note; else state.notes.push(note);
     await notePut(note);
+
+    // Вложения: удалённые убираем, новые сохраняем вместе с заметкой.
+    for (const id of state.removedAttachments) await fileDelete(id);
+    try {
+        for (const a of state.noteAttachments) {
+            if (!a.isNew) continue;
+            await fileSave({
+                id: a.id,
+                note_id: noteId,
+                name: a.name,
+                type: a.type,
+                size: a.size,
+                created_at: a.created_at || Date.now(),
+            }, a.blob);
+        }
+    } catch (e) {
+        console.warn('[attachments]', e);
+        toast('Заметка сохранена, но вложения не поместились в локальное хранилище');
+    }
+    state.removedAttachments = [];
+    state.noteAttachments = [];
+    await loadAttachCounts();
+
     closeModals();
     renderCalendar();
+    renderTasks();
+    renderDayTasks();
+    renderDayPanel();
     toast('Сохранено');
     haptic('medium');
     syncNotes().then(renderCalendar);
@@ -962,8 +1537,13 @@ async function deleteNote() {
     n.updated_at = Date.now();
     n.dirty = true;
     await notePut(n);
+    await filesDeleteForNote(n.client_id);
+    await loadAttachCounts();
     closeModals();
     renderCalendar();
+    renderTasks();
+    renderDayTasks();
+    renderDayPanel();
     toast('Заметка удалена');
     syncNotes().then(renderCalendar);
 }
@@ -1179,6 +1759,7 @@ async function renderMore() {
     document.querySelectorAll('#mode-seg .seg-btn').forEach((b) => b.classList.toggle('active', b.dataset.mode === (p?.mode || 'обычный')));
     $('timer-toggle').checked = (p?.show_timer ?? 1) === 1;
     $('timer-mode-select').value = String(p?.timer_start_mode ?? 0);
+    $('hide-empty-toggle').checked = state.hideEmpty;
     $('session-toggle').checked = (p?.show_session ?? 1) === 1;
     // Отладочные инструменты видит только администратор
     $('push-diag-btn').classList.toggle('hidden', !state.isAdmin);
@@ -1545,6 +2126,7 @@ async function saveUserSettings() {
     p.show_session = $('session-toggle').checked ? 1 : 0;
     await kvSet('profile', p);
     updateTabsVisibility();
+    syncScheduleToNative(); // «Показывать отсчёт» и «Начинать отсчёт» тоже влияют на островок
     if (!navigator.onLine) { toast('Сохранится при подключении'); return; }
     try {
         await api('POST', '/api/update_settings', {
@@ -1788,9 +2370,17 @@ function endTour() {
 
 // ─── Service Worker ───────────────────────────────────────────────────────────
 function registerSW() {
-    if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('./sw.js?v=' + APP_VERSION).catch((e) => console.warn('SW:', e));
-    }
+    if (!('serviceWorker' in navigator)) return;
+    const hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+        // Новый service worker обновил кэш (например, после установки APK).
+        // Перезагружаем страницу один раз, чтобы не остаться на старом app2.js.
+        if (!hadController) return;
+        if (sessionStorage.getItem('sw-reloaded') === '1') return;
+        sessionStorage.setItem('sw-reloaded', '1');
+        location.reload();
+    });
+    navigator.serviceWorker.register('./sw.js?v=' + APP_VERSION).catch((e) => console.warn('SW:', e));
 }
 
 // ─── Высота приложения ────────────────────────────────────────────────────────
@@ -1841,6 +2431,8 @@ function bindEvents() {
     on('note-remind', 'change', updateRemindHint);
     on('note-date', 'change', updateRemindHint);
     on('note-time', 'change', updateRemindHint);
+    on('note-attach-btn', 'click', () => $('note-file-input').click());
+    on('note-file-input', 'change', onNoteFilesPicked);
 
     // Приоритет в редакторе заметки
     document.querySelectorAll('#note-priority-seg .seg-btn').forEach((b) => b.addEventListener('click', () => {
@@ -1853,6 +2445,26 @@ function bindEvents() {
         if (!card) return;
         openLessonNoteModal(card.dataset.lessonDate, card.dataset.lessonText, card.dataset.lessonTime);
     });
+
+    // Локальный редактор расписания
+    on('edit-day-btn', 'click', openScheduleEditor);
+    on('schedule-edit-close', 'click', closeScheduleEditor);
+    on('toggle-empty-btn', 'click', () => {
+        state.hideEmpty = !state.hideEmpty;
+        localStorage.setItem('hideEmpty', state.hideEmpty ? '1' : '0');
+        $('hide-empty-toggle').checked = state.hideEmpty;
+        renderSchedule();
+        toast(state.hideEmpty ? 'Пустые пары по краям скрыты' : 'Пустые пары по краям снова видны');
+    });
+    on('toggle-aod-btn', 'click', toggleAod);
+    on('schedule-edit-add', 'click', addScheduleEditRow);
+    on('schedule-edit-save', 'click', saveScheduleEdit);
+    on('schedule-edit-reset', 'click', resetScheduleEdit);
+    on('schedule-edit-scope', 'change', updateScheduleScopeUI);
+    document.querySelectorAll('#schedule-edit-wt .seg-btn').forEach((b) => b.addEventListener('click', () => {
+        if (b.disabled) return;
+        setScheduleEditWt(+b.dataset.wt);
+    }));
     on('lesson-note-ok', 'click', confirmLessonNote);
     on('lesson-note-today', 'click', () => {
         const d = $('lesson-note-modal').dataset.clickDate;
@@ -1932,6 +2544,12 @@ function bindEvents() {
     document.querySelectorAll('#mode-seg .seg-btn').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)));
     on('timer-toggle', 'change', saveUserSettings);
     on('timer-mode-select', 'change', saveUserSettings);
+    on('hide-empty-toggle', 'change', (e) => {
+        state.hideEmpty = e.target.checked;
+        localStorage.setItem('hideEmpty', state.hideEmpty ? '1' : '0');
+        renderSchedule();
+        toast(state.hideEmpty ? 'Пустые пары скрыты' : 'Пустые пары снова видны');
+    });
     on('session-toggle', 'change', saveUserSettings);
     on('push-toggle', 'change', (e) => e.target.checked ? enablePush() : disablePush());
     document.querySelectorAll('#notify-seg .seg-btn').forEach((b) => b.addEventListener('click', async () => {
@@ -2172,9 +2790,7 @@ function nextSameLessonDate(lessonText) {
         const wd = (d.getDay() + 6) % 7;
         if (wd === 6) continue;
         const wt = weekTypeForDate(iso);
-        const sched = state.schedules[wt];
-        if (!sched) continue;
-        const hit = (sched[DAYS_FULL[wd]] || [])
+        const hit = dayLessonsFor(wt, DAYS_FULL[wd], iso)
             .map(parseLesson).filter((l) => !l.empty)
             .map((l) => ({ ...l, parts: parseLessonParts(l.text) }))
             .find((l) => lessonIdentity(l.parts) === targetKey);
@@ -2274,12 +2890,13 @@ function renderTasks() {
         const done = doneFromTitle(n.title);
         const overdue = n.date && n.date < todayIso && !done;
         const inWeek = n.date >= weekMon && n.date <= weekSun;
+        const ac = state.attachCounts[n.client_id] || 0;
         return `<div class="note-card task-card prio-${pr}${done ? ' done' : ''}" data-note="${esc(n.client_id)}">
             <button class="task-done${done ? ' is-done' : ''}" data-toggle-done="${esc(n.client_id)}" title="Отметить выполненным">${done ? '✅' : '☐'}</button>
             <div class="note-info">
                 <div class="note-title">${esc(titleWithoutPrio(titleWithoutDone(n.title)) || 'Без названия')}</div>
                 ${n.body ? `<div class="note-body">${esc(n.body)}</div>` : ''}
-                <div class="note-meta">${n.date ? '📅 ' + esc(formatDateShort(n.date)) : ''} ${n.time ? '· ⏰ ' + esc(n.time) : ''}${inWeek ? ' · <span class="week-tag">эта неделя</span>' : ''}${overdue ? ' · <b class="overdue">просрочено</b>' : ''}${n.dirty ? ' · ожидает синх.' : ''}</div>
+                <div class="note-meta">${n.date ? '📅 ' + esc(formatDateShort(n.date)) : ''} ${n.time ? '· ⏰ ' + esc(n.time) : ''}${ac ? ` · <span class="attach-badge">📎 ${ac}</span>` : ''}${inWeek ? ' · <span class="week-tag">эта неделя</span>' : ''}${overdue ? ' · <b class="overdue">просрочено</b>' : ''}${n.dirty ? ' · ожидает синх.' : ''}</div>
             </div>
         </div>`;
     }).join('');
