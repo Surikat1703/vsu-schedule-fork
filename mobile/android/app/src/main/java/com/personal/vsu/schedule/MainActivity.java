@@ -7,6 +7,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(ClassTimerPlugin.class);
+        registerPlugin(AodModePlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

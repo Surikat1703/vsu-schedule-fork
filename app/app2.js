@@ -782,7 +782,7 @@ async function aodWakeLock(enable) {
 
 // Что показывать на AOD: таймер до конца пары + таймер до перемены/второго блока
 function aodCompute() {
-    const res = { capMain: 'Пар нет', main: '', capSub: '', sub: '', lesson: '' };
+    const res = { capMain: 'Пар нет', main: '', capSub: '', sub: '', lesson: '', secMain: null, secSub: null };
     const now = botNow();
     const todayIdx = botDayIdx(now);
     const p = state.profile;
@@ -801,16 +801,16 @@ function aodCompute() {
         if (nowSec >= s && nowSec < e) {
             const t = nowSec - s;
             res.capMain = 'До конца пары';
-            res.main = fmtHMS(e - nowSec);
+            res.secMain = e - nowSec;
             res.lesson = l.text;
-            if (t < 2700) { res.capSub = 'До перемены'; res.sub = fmtHMS(2700 - t); }
-            else if (t < 3000) { res.capSub = 'Перемена'; res.sub = fmtHMS(3000 - t); }
-            else { res.capSub = 'Второй блок'; res.sub = ''; }
+            if (t < 2700) { res.capSub = 'До перемены'; res.secSub = 2700 - t; }
+            else if (t < 3000) { res.capSub = 'Перемена'; res.secSub = 3000 - t; }
+            else { res.capSub = 'Второй блок'; }
             return res;
         }
         if (nowSec < s) {
             res.capMain = 'До начала пары';
-            res.main = fmtHMS(s - nowSec);
+            res.secMain = s - nowSec;
             res.lesson = l.text;
             return res;
         }
@@ -819,33 +819,82 @@ function aodCompute() {
     return res;
 }
 
-function updateAod() {
+function aodVisible() {
     const scr = $('aod-screen');
-    if (!scr || scr.classList.contains('hidden')) return;
-    const c = aodCompute();
-    $('aod-cap-main').textContent = c.capMain;
-    $('aod-val-main').textContent = c.main;
-    $('aod-cap-sub').textContent = c.capSub;
-    $('aod-val-sub').textContent = c.sub;
-    $('aod-sub').classList.toggle('hidden', !c.sub);
-    $('aod-lesson').textContent = c.lesson.length > 80 ? c.lesson.slice(0, 80) + '…' : c.lesson;
+    return !!scr && !scr.classList.contains('hidden');
+}
 
+function setNodeText(el, txt) {
+    if (el && el.textContent !== txt) el.textContent = txt;
+}
+
+// Экономия батареи: секунды показываем только на последних 10 минутах,
+// дальше достаточно минут — тогда и перерисовывать экран нужно редко.
+const AOD_SECONDS_BELOW = 600;
+
+function aodFmt(sec) {
+    if (sec == null) return '';
+    if (sec <= AOD_SECONDS_BELOW) return fmtHMS(sec);
+    const totalMin = Math.ceil(sec / 60);
+    return Math.floor(totalMin / 60) + ':' + pad2(totalMin % 60);
+}
+
+function updateAod() {
+    if (!aodVisible()) return;
+    const c = aodCompute();
+    setNodeText($('aod-cap-main'), c.capMain);
+    setNodeText($('aod-val-main'), aodFmt(c.secMain));
+    setNodeText($('aod-cap-sub'), c.capSub);
+    setNodeText($('aod-val-sub'), aodFmt(c.secSub));
+    const sub = $('aod-sub');
+    if (sub) {
+        const hide = !c.sub;
+        if (sub.classList.contains('hidden') !== hide) sub.classList.toggle('hidden', hide);
+    }
+    setNodeText($('aod-lesson'), c.lesson.length > 80 ? c.lesson.slice(0, 80) + '…' : c.lesson);
+
+    // Есть ли на экране что-то, что меняется раз в секунду
+    state.aodPrecise = (c.secMain != null && c.secMain <= AOD_SECONDS_BELOW)
+        || (c.secSub != null && c.secSub <= AOD_SECONDS_BELOW);
+
+    // Часы перерисовываем только при смене минуты — лишние кадры не нужны
     const d = new Date();
-    $('aod-clock').textContent = pad2(d.getHours()) + ':' + pad2(d.getMinutes());
-    $('aod-date').textContent = d.getDate() + ' ' + MONTHS_GEN[d.getMonth()] + ', ' + DAYS_FULL[(d.getDay() + 6) % 7].toLowerCase();
+    const hm = pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+    if (state.aodClock !== hm) {
+        state.aodClock = hm;
+        setNodeText($('aod-clock'), hm);
+        setNodeText($('aod-date'), d.getDate() + ' ' + MONTHS_GEN[d.getMonth()] + ', ' + DAYS_FULL[(d.getDay() + 6) % 7].toLowerCase());
+    }
+}
+
+// Нативный AOD-режим: полный экран, приглушённая подсветка, низкая герцовка
+async function aodNative(active) {
+    const plugin = window.Capacitor?.Plugins?.AodMode;
+    if (plugin) {
+        try { await plugin.setActive({ active }); return; } catch (e) { console.warn('AodMode:', e); }
+    }
+    // Веб-версия: полноэкранный режим средствами браузера
+    try {
+        if (active && !document.fullscreenElement) await document.documentElement.requestFullscreen?.();
+        else if (!active && document.fullscreenElement) await document.exitFullscreen?.();
+    } catch (e) { /* браузер может запретить без жеста */ }
 }
 
 function aodOpen() {
     const scr = $('aod-screen');
     if (!scr) return;
+    state.aodClock = null;
+    state.aodNext = 0;
     scr.classList.remove('hidden');
     updateAod();
     aodWakeLock(true);
+    aodNative(true);
 }
 
 function aodClose() {
     $('aod-screen')?.classList.add('hidden');
     aodWakeLock(false);
+    aodNative(false);
 }
 
 function toggleAod() {
@@ -1197,6 +1246,7 @@ function fmtHMS(totalSec) {
 }
 
 function updateCountdown() {
+    if (aodVisible()) return; // под AOD карточка скрыта — не тратим ресурсы на её рендер
     const card = $('countdown-card');
     const p = state.profile;
     if (state.currentView !== 'schedule' || !p?.registered || !(p.show_timer ?? 1) || p.vacation_mode) {
@@ -2550,7 +2600,11 @@ function bindEvents() {
     on('toggle-aod-btn', 'click', toggleAod);
     on('aod-screen', 'click', toggleAod);
     document.addEventListener('visibilitychange', () => {
-        if (!document.hidden && state.aodMode) aodWakeLock(true);
+        if (document.hidden) return;
+        if (!state.aodMode) return;
+        aodWakeLock(true);
+        aodNative(true);   // системные панели после возврата в приложение прячем снова
+        updateAod();
     });
     on('schedule-edit-add', 'click', addScheduleEditRow);
     on('schedule-edit-save', 'click', saveScheduleEdit);
@@ -3020,7 +3074,20 @@ async function init() {
     registerSW();
     try { await idbOpen(); } catch (e) { console.warn('IDB:', e); }
 
-    setInterval(() => { updateCountdown(); updateExamCountdown(); updateAod(); }, 1000);
+    setInterval(() => {
+        // В AOD обновляем только сам AOD — остальной интерфейс скрыт и не рендерится.
+        // Частота обновления зависит от точности: секунды только в последние 10 минут.
+        if (aodVisible()) {
+            const nowMs = Date.now();
+            if (!state.aodNext || nowMs >= state.aodNext) {
+                updateAod();
+                state.aodNext = Date.now() + (state.aodPrecise ? 1000 : 30000);
+            }
+            return;
+        }
+        updateCountdown();
+        updateExamCountdown();
+    }, 1000);
 
     // Внутри Telegram Mini App — автовход по initData
     const tgApp = await waitTelegram(navigator.onLine ? 2000 : 300);
