@@ -601,6 +601,10 @@ async function enterApp() {
     refreshAll();
     preparePush();
     maybeOfferTour();
+    if (state.aodMode) {
+        updateAodButton();
+        aodOpen();
+    }
 }
 
 // ─── Рендер: общее ────────────────────────────────────────────────────────────
@@ -759,11 +763,98 @@ function updateAodButton() {
     btn.textContent = state.aodMode ? '📱 Выкл. AOD' : '📱 Вкл. AOD';
 }
 
+// ─── AOD (Always-On Display): чёрный экран с таймерами ───────────────────────
+let aodLock = null;
+
+async function aodWakeLock(enable) {
+    try {
+        if (enable) {
+            if (!('wakeLock' in navigator) || aodLock) return;
+            aodLock = await navigator.wakeLock.request('screen');
+            aodLock.addEventListener('release', () => { aodLock = null; });
+        } else if (aodLock) {
+            const l = aodLock;
+            aodLock = null;
+            await l.release();
+        }
+    } catch (e) { /* блокировка экрана недоступна — не критично */ }
+}
+
+// Что показывать на AOD: таймер до конца пары + таймер до перемены/второго блока
+function aodCompute() {
+    const res = { capMain: 'Пар нет', main: '', capSub: '', sub: '', lesson: '' };
+    const now = botNow();
+    const todayIdx = botDayIdx(now);
+    const p = state.profile;
+    if (todayIdx === 6) { res.capMain = 'Выходной'; return res; }
+    if (p?.vacation_mode) { res.capMain = 'Каникулы'; return res; }
+
+    const dateIso = isoFromUTCParts(now);
+    const wt = weekTypeForDate(dateIso);
+    const lessons = dayLessonsFor(wt, DAYS_FULL[todayIdx], dateIso)
+        .map(parseLesson).filter((l) => !l.empty);
+    if (!lessons.length) { res.capMain = 'Пар нет'; return res; }
+
+    const nowSec = botMinutes(now) * 60 + now.getUTCSeconds();
+    for (const l of lessons) {
+        const s = parseTimeMin(l.start) * 60, e = parseTimeMin(l.end) * 60;
+        if (nowSec >= s && nowSec < e) {
+            const t = nowSec - s;
+            res.capMain = 'До конца пары';
+            res.main = fmtHMS(e - nowSec);
+            res.lesson = l.text;
+            if (t < 2700) { res.capSub = 'До перемены'; res.sub = fmtHMS(2700 - t); }
+            else if (t < 3000) { res.capSub = 'Перемена'; res.sub = fmtHMS(3000 - t); }
+            else { res.capSub = 'Второй блок'; res.sub = ''; }
+            return res;
+        }
+        if (nowSec < s) {
+            res.capMain = 'До начала пары';
+            res.main = fmtHMS(s - nowSec);
+            res.lesson = l.text;
+            return res;
+        }
+    }
+    res.capMain = 'Пары закончились';
+    return res;
+}
+
+function updateAod() {
+    const scr = $('aod-screen');
+    if (!scr || scr.classList.contains('hidden')) return;
+    const c = aodCompute();
+    $('aod-cap-main').textContent = c.capMain;
+    $('aod-val-main').textContent = c.main;
+    $('aod-cap-sub').textContent = c.capSub;
+    $('aod-val-sub').textContent = c.sub;
+    $('aod-sub').classList.toggle('hidden', !c.sub);
+    $('aod-lesson').textContent = c.lesson.length > 80 ? c.lesson.slice(0, 80) + '…' : c.lesson;
+
+    const d = new Date();
+    $('aod-clock').textContent = pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+    $('aod-date').textContent = d.getDate() + ' ' + MONTHS_GEN[d.getMonth()] + ', ' + DAYS_FULL[(d.getDay() + 6) % 7].toLowerCase();
+}
+
+function aodOpen() {
+    const scr = $('aod-screen');
+    if (!scr) return;
+    scr.classList.remove('hidden');
+    updateAod();
+    aodWakeLock(true);
+}
+
+function aodClose() {
+    $('aod-screen')?.classList.add('hidden');
+    aodWakeLock(false);
+}
+
 function toggleAod() {
     state.aodMode = !state.aodMode;
     localStorage.setItem('aodMode', state.aodMode ? '1' : '0');
     updateAodButton();
+    if (state.aodMode) aodOpen(); else aodClose();
     updateCountdown();
+    haptic();
 }
 
 // Скрываем только пустые слоты до первой и после последней пары.
@@ -1132,7 +1223,7 @@ function updateCountdown() {
             if (state.aodMode) {
                 const elapsedSec = nowSec - s;
                 if (elapsedSec < 2700) sub = 'До перемены: ' + fmtHMS(2700 - elapsedSec);
-                else if (elapsedSec < 3000) { sub = 'Перемена: ' + fmtHMS(3000 - elapsedSec); label = 'Перемена'; }
+                else if (elapsedSec < 3000) sub = 'Перемена: ' + fmtHMS(3000 - elapsedSec);
                 else sub = 'Второй блок';
             }
             break;
@@ -2457,6 +2548,10 @@ function bindEvents() {
         toast(state.hideEmpty ? 'Пустые пары по краям скрыты' : 'Пустые пары по краям снова видны');
     });
     on('toggle-aod-btn', 'click', toggleAod);
+    on('aod-screen', 'click', toggleAod);
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && state.aodMode) aodWakeLock(true);
+    });
     on('schedule-edit-add', 'click', addScheduleEditRow);
     on('schedule-edit-save', 'click', saveScheduleEdit);
     on('schedule-edit-reset', 'click', resetScheduleEdit);
@@ -2925,7 +3020,7 @@ async function init() {
     registerSW();
     try { await idbOpen(); } catch (e) { console.warn('IDB:', e); }
 
-    setInterval(() => { updateCountdown(); updateExamCountdown(); }, 1000);
+    setInterval(() => { updateCountdown(); updateExamCountdown(); updateAod(); }, 1000);
 
     // Внутри Telegram Mini App — автовход по initData
     const tgApp = await waitTelegram(navigator.onLine ? 2000 : 300);

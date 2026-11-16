@@ -665,3 +665,36 @@ label { display: block; font-size: 13px; color: var(--text-muted); margin: 10px 
 .attach-del { color: var(--red); }
 .attach-badge { color: var(--text-muted); }
 #note-attach-btn { width: 100%; }
+
+/* ═══ AOD: чёрный экран с таймерами ═══ */
+.aod-screen {
+    position: fixed; inset: 0; z-index: 120;
+    background: #000; color: #e6e9ef;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 2.2vh; padding: 24px;
+    user-select: none; -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
+}
+.aod-clock {
+    font-size: clamp(54px, 17vw, 118px);
+    font-weight: 200; line-height: 1; letter-spacing: 2px;
+    font-variant-numeric: tabular-nums;
+}
+.aod-date { font-size: 13.5px; color: #5a5a5a; letter-spacing: .6px; margin-top: -6px; }
+.aod-grid { display: flex; gap: 9vw; align-items: flex-start; justify-content: center; margin-top: 3vh; }
+.aod-block { display: flex; flex-direction: column; align-items: center; gap: 8px; min-width: 0; }
+.aod-cap {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 1.6px;
+    color: #6d6d6d; text-align: center; white-space: nowrap;
+}
+.aod-val {
+    font-size: clamp(30px, 9.5vw, 56px); font-weight: 700; line-height: 1;
+    font-variant-numeric: tabular-nums; color: #f4f6fb;
+}
+.aod-block--sub .aod-val { color: #9aa6ba; font-weight: 600; }
+.aod-lesson { font-size: 13px; color: #6a6a6a; text-align: center; max-width: 90%; margin-top: 1vh; }
+.aod-hint {
+    position: absolute; bottom: 26px; left: 0; right: 0;
+    text-align: center; font-size: 11px; letter-spacing: .5px; color: #3a3a3a;
+}
