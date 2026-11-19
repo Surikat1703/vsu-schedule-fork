@@ -41,7 +41,7 @@
 3. Войди через Telegram-бота, как в оригинальном приложении.
 
 ### 🤖 Android (APK)
-1. **Скачай приложение здесь: [⬇️ VSU-Schedule.apk](https://github.com/Surikat1703/vsu-schedule-fork/releases/download/v1.0.1.5/VSU-Schedule.apk)**
+1. **Скачай приложение здесь: [⬇️ VSU-Schedule.apk](https://github.com/Surikat1703/vsu-schedule-fork/releases/download/v1.0.1.6/VSU-Schedule.apk)**
 2. Открой файл и разреши установку «из неизвестных источников», если попросит.
 3. Войди через Telegram-бота.
 
