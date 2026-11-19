@@ -486,6 +486,7 @@ function cancelLogin() {
 }
 
 function logout() {
+    clearNoteAttachCache();
     localStorage.clear();
     idbClearAll().finally(() => location.reload());
 }
@@ -1278,13 +1279,14 @@ function renderDayTasks() {
     box.innerHTML = `<div class="section-title">📌 Задачи на ${esc(formatDateShort(iso))}</div>` + list.map((n) => {
         const done = doneFromTitle(n.title);
         const pr = prioOf(n);
-        const ac = state.attachCounts[n.client_id] || 0;
+        const ac = (state.attachCounts && state.attachCounts[n.client_id]) || (noteAttachCache.has(n.client_id) ? noteAttachCache.get(n.client_id).length : 0);
         return `<div class="note-card task-card prio-${pr}${done ? ' done' : ''}" data-note="${esc(n.client_id)}">
             <button class="task-done${done ? ' is-done' : ''}" data-toggle-done="${esc(n.client_id)}" title="Отметить выполненным">${done ? '✅' : '☐'}</button>
             <div class="note-info">
                 <div class="note-title">${esc(titleWithoutPrio(titleWithoutDone(n.title)) || 'Без названия')}</div>
                 ${n.body ? `<div class="note-body">${esc(n.body)}</div>` : ''}
-                <div class="note-meta">${n.time ? '⏰ ' + esc(n.time) : ''}${ac ? ` · <span class="attach-badge">📎 ${ac}</span>` : ''}</div>
+                ${ac ? `<div class="attach-strip" data-attach-note="${esc(n.client_id)}"></div>` : ''}
+                <div class="note-meta">${n.time ? '⏰ ' + esc(n.time) : ''}${ac ? (n.time ? ' · ' : '') + `<span class="attach-badge">📎 ${ac}</span>` : ''}</div>
             </div></div>`;
     }).join('');
     document.querySelectorAll('#day-tasks .task-card[data-note]').forEach((el) => {
@@ -1294,6 +1296,7 @@ function renderDayTasks() {
         e.stopPropagation();
         toggleDone(b.dataset.toggleDone);
     }));
+    loadNoteAttachThumbs(box);
 }
 
 // ─── Таймер ───────────────────────────────────────────────────────────────────
@@ -1452,18 +1455,20 @@ function renderDayPanel() {
     for (const n of notes) {
         const remindStr = n.remind_at ? ' · 🔔' : '';
         const done = doneFromTitle(n.title);
-        const ac = state.attachCounts[n.client_id] || 0;
+        const ac = (state.attachCounts && state.attachCounts[n.client_id]) || (noteAttachCache.has(n.client_id) ? noteAttachCache.get(n.client_id).length : 0);
         html += `<div class="note-card${done ? ' done' : ''}" data-note="${esc(n.client_id)}">
             <div class="note-info">
                 <div class="note-title">${esc(titleWithoutPrio(titleWithoutDone(n.title)) || 'Без названия')}</div>
                 ${n.body ? `<div class="note-body">${esc(n.body)}</div>` : ''}
+                ${ac ? `<div class="attach-strip" data-attach-note="${esc(n.client_id)}"></div>` : ''}
                 <div class="note-meta">${n.time ? '⏰ ' + esc(n.time) : 'Весь день'}${remindStr}${ac ? ` · <span class="attach-badge">📎 ${ac}</span>` : ''}${n.dirty ? ' · ожидает синх.' : ''}</div>
             </div>
             <button class="task-done${done ? ' is-done' : ''}" data-toggle-done="${esc(n.client_id)}" title="Отметить выполненным">${done ? '✅' : '☐'}</button>
         </div>`;
     }
     if (!html) html = `<p class="muted small center" style="padding:14px 0">Пусто. Добавь заметку!</p>`;
-    $('day-panel-content').innerHTML = html;
+    const dayPanelContent = $('day-panel-content');
+    dayPanelContent.innerHTML = html;
     document.querySelectorAll('#day-panel-content .note-card[data-note]').forEach((el) => {
         el.addEventListener('click', () => openNoteModal(state.notes.find((n) => n.client_id === el.dataset.note)));
     });
@@ -1471,6 +1476,7 @@ function renderDayPanel() {
         e.stopPropagation();
         toggleDone(b.dataset.toggleDone);
     }));
+    loadNoteAttachThumbs(dayPanelContent);
 }
 
 // ─── Заметки ──────────────────────────────────────────────────────────────────
@@ -1482,9 +1488,295 @@ function closeModals() {
     $('modal-backdrop').classList.add('hidden');
     document.querySelectorAll('.modal').forEach((m) => m.classList.add('hidden'));
     revokeNoteUrls();
+    closeAttachmentViewer();
 }
 
 // ─── Вложения к заметкам ─────────────────────────────────────────────────────
+const noteAttachCache = new Map();
+const noteAttachPending = new Map();
+let activeAttachmentViewer = null;
+let savedBodyOverflow = '';
+
+function clearNoteAttachCache(noteId) {
+    try {
+        if (noteId) {
+            const list = noteAttachCache.get(noteId);
+            if (Array.isArray(list)) {
+                list.forEach((item) => {
+                    if (item.url) {
+                        try { URL.revokeObjectURL(item.url); } catch (e) { }
+                    }
+                });
+            }
+            noteAttachCache.delete(noteId);
+            noteAttachPending.delete(noteId);
+        } else {
+            noteAttachCache.forEach((list) => {
+                if (Array.isArray(list)) {
+                    list.forEach((item) => {
+                        if (item.url) {
+                            try { URL.revokeObjectURL(item.url); } catch (e) { }
+                        }
+                    });
+                }
+            });
+            noteAttachCache.clear();
+            noteAttachPending.clear();
+        }
+    } catch (e) {
+        console.warn('clearNoteAttachCache error:', e);
+    }
+}
+
+function fileExt(name) {
+    if (!name || typeof name !== 'string' || !name.includes('.')) return '';
+    const ext = name.split('.').pop();
+    return ext && ext.length <= 6 ? ext.toUpperCase() : '';
+}
+
+function closeAttachmentViewer() {
+    if (!activeAttachmentViewer) return;
+    const v = activeAttachmentViewer;
+    activeAttachmentViewer = null;
+    if (v._tempUrl) {
+        try { URL.revokeObjectURL(v._tempUrl); } catch (e) { }
+    }
+    v.remove();
+    document.body.style.overflow = savedBodyOverflow;
+    document.removeEventListener('keydown', onViewerKeydown);
+}
+
+function onViewerKeydown(e) {
+    if (e.key === 'Escape') closeAttachmentViewer();
+}
+
+async function openAttachmentViewer(a) {
+    if (!a) return;
+    closeAttachmentViewer();
+
+    const isImg = (a.type || '').startsWith('image/');
+    if (isImg) {
+        let src = a.url;
+        let tempUrl = null;
+        if (!src) {
+            let blob = a.blob;
+            if (!blob && a.id) {
+                blob = await fileBlobGet(a.id);
+            }
+            if (blob) {
+                tempUrl = URL.createObjectURL(blob);
+                src = tempUrl;
+            }
+        }
+        if (!src) {
+            toast('Файл недоступен');
+            return;
+        }
+
+        savedBodyOverflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+
+        const overlay = document.createElement('div');
+        overlay.className = 'attach-viewer';
+        if (tempUrl) overlay._tempUrl = tempUrl;
+
+        const img = document.createElement('img');
+        img.src = src;
+        img.alt = a.name || 'Изображение';
+
+        const hint = document.createElement('div');
+        hint.className = 'attach-viewer-hint';
+        hint.textContent = 'Нажмите в любом месте, чтобы закрыть';
+
+        overlay.append(img, hint);
+        overlay.addEventListener('click', closeAttachmentViewer);
+        document.addEventListener('keydown', onViewerKeydown);
+
+        document.body.appendChild(overlay);
+        activeAttachmentViewer = overlay;
+        return;
+    }
+
+    // Non-image types
+    let url = a.url;
+    let tempUrl = null;
+    if (!url) {
+        let blob = a.blob;
+        if (!blob && a.id) {
+            blob = await fileBlobGet(a.id);
+        }
+        if (blob) {
+            tempUrl = URL.createObjectURL(blob);
+            url = tempUrl;
+        }
+    }
+
+    const sharePlugin = window.Capacitor?.Plugins?.Share;
+    const fileOpenerPlugin = window.Capacitor?.Plugins?.FileOpener;
+    let handled = false;
+
+    if (sharePlugin && typeof sharePlugin.share === 'function' && url) {
+        try {
+            await sharePlugin.share({
+                title: a.name || 'Файл',
+                url: url
+            });
+            handled = true;
+        } catch (e) {
+            console.warn('Share plugin failed:', e);
+        }
+    }
+
+    if (!handled && fileOpenerPlugin && typeof fileOpenerPlugin.open === 'function' && url) {
+        try {
+            await fileOpenerPlugin.open({
+                filePath: url,
+                contentType: a.type || undefined
+            });
+            handled = true;
+        } catch (e) {
+            console.warn('FileOpener failed:', e);
+        }
+    }
+
+    if (!handled && url) {
+        try {
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = a.name || 'file';
+            link.target = '_blank';
+            link.rel = 'noopener';
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            handled = true;
+        } catch (e) {
+            console.warn('Anchor download failed:', e);
+        }
+    }
+
+    const isNativeCapacitor = !!(window.Capacitor?.isNativePlatform && window.Capacitor.isNativePlatform());
+    if (!handled || !url || (isNativeCapacitor && !sharePlugin && !fileOpenerPlugin)) {
+        toast('Файл: ' + (a.name || 'файл') + (a.size ? ' · ' + fmtFileSize(a.size) : ''));
+    }
+
+    if (tempUrl) {
+        setTimeout(() => { try { URL.revokeObjectURL(tempUrl); } catch (e) { } }, 60000);
+    }
+}
+
+function openAttachment(a) {
+    return openAttachmentViewer(a);
+}
+
+function renderAttachThumbs(noteIdOrItems, container) {
+    let items = [];
+    let noteId = '';
+    if (Array.isArray(noteIdOrItems)) {
+        items = noteIdOrItems;
+    } else if (typeof noteIdOrItems === 'string') {
+        noteId = noteIdOrItems;
+        items = noteAttachCache.get(noteId) || [];
+    }
+    const targets = container ? [container] : (noteId ? [...document.querySelectorAll(`.attach-strip[data-attach-note="${noteId}"]`)] : []);
+    if (!targets.length) return;
+
+    targets.forEach((box) => {
+        box.innerHTML = '';
+        if (!items || !items.length) return;
+
+        const maxTiles = 3;
+        const showCount = Math.min(items.length, maxTiles);
+        for (let i = 0; i < showCount; i++) {
+            const a = items[i];
+            let tile;
+            if ((a.type || '').startsWith('image/') && a.url) {
+                tile = document.createElement('img');
+                tile.className = 'attach-tile attach-tile--img';
+                tile.src = a.url;
+                tile.alt = a.name || 'Вложение';
+            } else {
+                tile = document.createElement('div');
+                tile.className = 'attach-tile attach-tile--file';
+                const iconSpan = document.createElement('span');
+                iconSpan.className = 'attach-tile-icon';
+                iconSpan.textContent = fileIcon(a.type, a.name);
+                const extSpan = document.createElement('span');
+                extSpan.className = 'attach-tile-ext';
+                extSpan.textContent = fileExt(a.name);
+                tile.append(iconSpan, extSpan);
+            }
+            tile.title = a.name || 'Вложение';
+            tile.addEventListener('click', (e) => {
+                e.stopPropagation();
+                openAttachmentViewer(a);
+            });
+            box.appendChild(tile);
+        }
+
+        if (items.length > maxTiles) {
+            const moreCount = items.length - maxTiles;
+            const moreTile = document.createElement('div');
+            moreTile.className = 'attach-tile attach-tile--more';
+            moreTile.textContent = `+${moreCount}`;
+            moreTile.title = `Ещё ${moreCount}`;
+            moreTile.addEventListener('click', (e) => {
+                e.stopPropagation();
+                openAttachmentViewer(items[maxTiles]);
+            });
+            box.appendChild(moreTile);
+        }
+    });
+}
+
+async function loadNoteAttachThumbs(container) {
+    const root = typeof container === 'string' ? $(container) : (container || document);
+    if (!root) return;
+    const strips = root.querySelectorAll('.attach-strip[data-attach-note]');
+    if (!strips.length) return;
+
+    for (const strip of strips) {
+        const noteId = strip.dataset.attachNote;
+        if (!noteId) continue;
+
+        let items = noteAttachCache.get(noteId);
+        if (!items) {
+            if (noteAttachPending.has(noteId)) {
+                items = await noteAttachPending.get(noteId);
+            } else {
+                const p = (async () => {
+                    const files = await filesForNote(noteId);
+                    return Promise.all(files.map(async (f) => {
+                        let url = '';
+                        if ((f.type || '').startsWith('image/')) {
+                            const blob = await fileBlobGet(f.id);
+                            if (blob) url = URL.createObjectURL(blob);
+                        }
+                        return {
+                            id: f.id,
+                            name: f.name,
+                            type: f.type,
+                            size: f.size,
+                            url: url
+                        };
+                    }));
+                })();
+                noteAttachPending.set(noteId, p);
+                try {
+                    items = await p;
+                    noteAttachCache.set(noteId, items);
+                } catch (err) {
+                    console.warn('loadNoteAttachThumbs error:', err);
+                    items = [];
+                } finally {
+                    noteAttachPending.delete(noteId);
+                }
+            }
+        }
+        renderAttachThumbs(items, strip, noteId);
+    }
+}
+
 function revokeNoteUrls() {
     state.noteObjectUrls.forEach((u) => { try { URL.revokeObjectURL(u); } catch (e) { } });
     state.noteObjectUrls = [];
@@ -1506,20 +1798,6 @@ function fmtFileSize(bytes) {
     return (bytes / (1024 * 1024)).toFixed(1) + ' МБ';
 }
 
-function openAttachment(a) {
-    if (!a.blob) { toast('Файл недоступен'); return; }
-    const url = URL.createObjectURL(a.blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.target = '_blank';
-    link.rel = 'noopener';
-    link.download = a.name || 'file';
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
-}
-
 function renderNoteAttachments() {
     const box = $('note-attachments');
     if (!box) return;
@@ -1538,12 +1816,16 @@ function renderNoteAttachments() {
             img.className = 'attach-thumb';
             img.alt = a.name || '';
             img.src = URL.createObjectURL(a.blob);
+            img.style.cursor = 'pointer';
+            img.addEventListener('click', () => openAttachmentViewer(a));
             state.noteObjectUrls.push(img.src);
             item.appendChild(img);
         } else {
             const thumb = document.createElement('div');
             thumb.className = 'attach-thumb';
             thumb.textContent = fileIcon(a.type, a.name);
+            thumb.style.cursor = 'pointer';
+            thumb.addEventListener('click', () => openAttachmentViewer(a));
             item.appendChild(thumb);
         }
 
@@ -1561,7 +1843,7 @@ function renderNoteAttachments() {
         openBtn.className = 'attach-open';
         openBtn.textContent = '↗';
         openBtn.title = 'Открыть';
-        openBtn.addEventListener('click', () => openAttachment(a));
+        openBtn.addEventListener('click', () => openAttachmentViewer(a));
 
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
@@ -1716,6 +1998,7 @@ async function saveNote() {
     }
     state.removedAttachments = [];
     state.noteAttachments = [];
+    clearNoteAttachCache(note.client_id);
     await loadAttachCounts();
 
     closeModals();
@@ -1731,6 +2014,7 @@ async function saveNote() {
 async function deleteNote() {
     const n = state.editingNote;
     if (!n) return;
+    clearNoteAttachCache(n.client_id);
     n.deleted = 1;
     n.updated_at = Date.now();
     n.dirty = true;
@@ -3098,12 +3382,13 @@ function renderTasks() {
         const done = doneFromTitle(n.title);
         const overdue = n.date && n.date < todayIso && !done;
         const inWeek = n.date >= weekMon && n.date <= weekSun;
-        const ac = state.attachCounts[n.client_id] || 0;
+        const ac = (state.attachCounts && state.attachCounts[n.client_id]) || (noteAttachCache.has(n.client_id) ? noteAttachCache.get(n.client_id).length : 0);
         return `<div class="note-card task-card prio-${pr}${done ? ' done' : ''}" data-note="${esc(n.client_id)}">
             <button class="task-done${done ? ' is-done' : ''}" data-toggle-done="${esc(n.client_id)}" title="Отметить выполненным">${done ? '✅' : '☐'}</button>
             <div class="note-info">
                 <div class="note-title">${esc(titleWithoutPrio(titleWithoutDone(n.title)) || 'Без названия')}</div>
                 ${n.body ? `<div class="note-body">${esc(n.body)}</div>` : ''}
+                ${ac ? `<div class="attach-strip" data-attach-note="${esc(n.client_id)}"></div>` : ''}
                 <div class="note-meta">${n.date ? '📅 ' + esc(formatDateShort(n.date)) : ''} ${n.time ? '· ⏰ ' + esc(n.time) : ''}${ac ? ` · <span class="attach-badge">📎 ${ac}</span>` : ''}${inWeek ? ' · <span class="week-tag">эта неделя</span>' : ''}${overdue ? ' · <b class="overdue">просрочено</b>' : ''}${n.dirty ? ' · ожидает синх.' : ''}</div>
             </div>
         </div>`;
@@ -3115,6 +3400,7 @@ function renderTasks() {
         e.stopPropagation();
         toggleDone(b.dataset.toggleDone);
     }));
+    loadNoteAttachThumbs(box);
 }
 
 // ─── Инициализация ────────────────────────────────────────────────────────────

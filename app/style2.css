@@ -666,6 +666,61 @@ label { display: block; font-size: 13px; color: var(--text-muted); margin: 10px 
 .attach-badge { color: var(--text-muted); }
 #note-attach-btn { width: 100%; }
 
+/* ─── Горизонтальная лента вложений под заметками ─── */
+.attach-strip {
+    display: flex; gap: 6px; margin-top: 6px;
+    overflow-x: auto; -webkit-overflow-scrolling: touch;
+    scrollbar-width: none; padding: 1px 0;
+}
+.attach-strip:empty { display: none; margin: 0; padding: 0; }
+.attach-strip::-webkit-scrollbar { display: none; }
+.attach-tile {
+    width: 56px; height: 56px; flex: 0 0 56px;
+    border-radius: 10px; border: 1px solid var(--border);
+    box-sizing: border-box; cursor: pointer; overflow: hidden;
+    user-select: none; -webkit-user-select: none;
+}
+img.attach-tile,
+.attach-tile--img {
+    object-fit: cover; background: var(--bg-card2); display: block;
+}
+.attach-tile--file {
+    background: #181f30; color: #eef2f8;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 2px;
+}
+.attach-tile-icon { font-size: 20px; line-height: 1; }
+.attach-tile-ext {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.5px;
+    color: #8b96ab; line-height: 1; max-width: 48px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.attach-tile--more {
+    background: #181f30; color: #8b96ab;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 700;
+}
+
+/* ─── Полноэкранный просмотрщик вложений ─── */
+.attach-viewer {
+    position: fixed; inset: 0; z-index: 135;
+    background: #000;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    cursor: pointer; user-select: none; -webkit-user-select: none;
+    animation: fadein 0.18s ease;
+}
+.attach-viewer img {
+    max-width: 100%; max-height: 100%;
+    object-fit: contain;
+}
+.attach-viewer-hint {
+    position: absolute; bottom: calc(env(safe-area-inset-bottom) + 16px);
+    color: rgba(255, 255, 255, 0.7); font-size: 12.5px;
+    background: rgba(0, 0, 0, 0.6); padding: 6px 14px;
+    border-radius: 16px; pointer-events: none;
+}
+
 /* ═══ AOD: чёрный экран с таймерами ═══ */
 .aod-screen {
     position: fixed; inset: 0; z-index: 120;
